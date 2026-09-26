@@ -22,6 +22,7 @@ import com.google.protobuf.Duration;
 import com.google.protobuf.Empty;
 import com.google.protobuf.Timestamp;
 import io.floci.gcp.core.common.GcpGrpcController;
+import io.floci.gcp.core.common.GcpResourceNames;
 import io.floci.gcp.core.common.PageToken;
 import io.floci.gcp.services.scheduler.model.StoredJob;
 import io.grpc.stub.StreamObserver;
@@ -44,8 +45,8 @@ public class SchedulerController extends CloudSchedulerGrpc.CloudSchedulerImplBa
     public void listJobs(ListJobsRequest request, StreamObserver<ListJobsResponse> responseObserver) {
         LOG.debugf("listJobs parent=%s", request.getParent());
         try {
-            String[] parts = parseParent(request.getParent());
-            List<StoredJob> all = service.listJobs(parts[0], parts[1]);
+            GcpResourceNames.ProjectLocation parent = GcpResourceNames.parseLocationParent(request.getParent());
+            List<StoredJob> all = service.listJobs(parent.project(), parent.location());
             PageToken.Page<StoredJob> page = PageToken.paginate(all,
                     request.getPageSize(), request.getPageToken());
             ListJobsResponse.Builder response = ListJobsResponse.newBuilder();
@@ -80,6 +81,7 @@ public class SchedulerController extends CloudSchedulerGrpc.CloudSchedulerImplBa
     public void createJob(CreateJobRequest request, StreamObserver<Job> responseObserver) {
         LOG.infof("createJob parent=%s", request.getParent());
         try {
+            GcpResourceNames.parseLocationParent(request.getParent());
             StoredJob stored = service.createJob(request.getParent(), fromJobProto(request.getJob()));
             responseObserver.onNext(toJobProto(stored));
             responseObserver.onCompleted();
@@ -345,13 +347,5 @@ public class SchedulerController extends CloudSchedulerGrpc.CloudSchedulerImplBa
 
     private static String emptyToNull(String s) {
         return (s == null || s.isEmpty()) ? null : s;
-    }
-
-    private static String[] parseParent(String parent) {
-        // parent = "projects/{project}/locations/{location}"
-        String[] parts = parent.split("/");
-        String project = parts.length > 1 ? parts[1] : parent;
-        String location = parts.length > 3 ? parts[3] : "us-central1";
-        return new String[]{project, location};
     }
 }
