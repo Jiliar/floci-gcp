@@ -37,7 +37,8 @@ public class ImageCacheService {
         this.registryCredentials = config.docker().registryCredentials();
     }
 
-    public void ensureImageExists(String image) {
+    public void ensureImageExists(String requested) {
+        String image = withDefaultTag(requested);
         if (pulledImages.contains(image)) {
             return;
         }
@@ -141,6 +142,20 @@ public class ImageCacheService {
             }
         }
         return new AuthConfig();
+    }
+
+    /**
+     * The reference to pull: an image with neither a tag nor a digest gets {@code :latest}, which
+     * is what {@code docker pull} and {@code docker run} assume. The Engine API does not: an empty
+     * tag on {@code POST /images/create} pulls every tag of the repository, so {@code busybox}
+     * alone would fetch all of them, including legacy tags a daemon may refuse to pull.
+     */
+    static String withDefaultTag(String image) {
+        if (image.contains("@")) {
+            return image;
+        }
+        String name = image.substring(image.lastIndexOf('/') + 1);
+        return name.contains(":") ? image : image + ":latest";
     }
 
     static String extractRegistryHost(String image) {
