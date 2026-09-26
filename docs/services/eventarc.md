@@ -53,7 +53,10 @@ Supported destinations: **Cloud Run services** (resolved through the emulator's 
                     .setValue("google.cloud.pubsub.topic.v1.messagePublished"))
                 .setDestination(Destination.newBuilder()
                     .setCloudRun(CloudRun.newBuilder()
-                        .setService("hello-run").setRegion("us-central1"))))
+                        .setService("hello-run").setRegion("us-central1")))
+                .setTransport(Transport.newBuilder()
+                    .setPubsub(Pubsub.newBuilder()
+                        .setTopic("projects/my-project/topics/my-topic"))))
             .build())
         .get();
     ```
@@ -76,8 +79,8 @@ Supported destinations: **Cloud Run services** (resolved through the emulator's 
 ## Not Yet Supported
 
 - GKE, Workflows, and Cloud Functions destinations (logged and dropped)
-- `match-path-pattern` operators: event filters use exact-value matching (with a last-segment fallback for `topic`/`bucket` attributes)
+- `match-path-pattern` operators: event filters use exact-value matching (a bare `topic` value resolves to `projects/{trigger project}/topics/{name}`; `bucket` falls back to last-segment matching)
 - Delivery retries and dead-lettering: delivery is fire-and-forget; failures are logged, not surfaced
 - Channels and third-party providers (stubs)
 
-A trigger with no `eventFilters` never matches. A trigger whose `transport.pubsub` topic matches the published topic receives the event even if its filters do not match.
+A trigger with no `eventFilters` never matches. A Pub/Sub trigger fires only for the topic named in `transport.pubsub.topic` (a bare name resolves against the trigger's project), even if its filters do not match. Without a transport topic, it fires only when an explicit `topic` event filter matches the published topic in the same project. floci does not provision an Eventarc-managed topic, so a `messagePublished` trigger with neither never fires.

@@ -173,6 +173,99 @@ class EventarcServiceTest {
     }
 
     @Test
+    void transportTopicInOtherProjectDoesNotFire() {
+        service.createTrigger("pB", "us-central1", "t1", pubSubTriggerBody("projects/pB/topics/t"), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/pA/topics/t", message());
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void typeOnlyTriggerFiresOnlyForItsTransportTopic() {
+        service.createTrigger("p1", "us-central1", "t1", pubSubTriggerBody("projects/p1/topics/t1"), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/p1/topics/other", message());
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+
+        service.onPubSubPublish("projects/p1/topics/t1", message());
+        ArgumentCaptor<HttpRequest> requestCaptor = ArgumentCaptor.forClass(HttpRequest.class);
+        verify(httpClient, times(1)).sendAsync(requestCaptor.capture(), any());
+        assertEquals("//pubsub.googleapis.com/projects/p1/topics/t1",
+                requestCaptor.getValue().headers().firstValue("ce-source").orElse(""));
+    }
+
+    @Test
+    void typeOnlyTriggerWithoutTransportTopicDoesNotFire() {
+        service.createTrigger("p1", "us-central1", "t1", pubSubTriggerBody(null), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/p1/topics/any-topic", message());
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void bareTransportTopicResolvesToTriggerProject() {
+        service.createTrigger("p2", "us-central1", "t1", pubSubTriggerBody("t"), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/p1/topics/t", message());
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+
+        service.onPubSubPublish("projects/p2/topics/t", message());
+        verify(httpClient, times(1)).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void topicFilterIsProjectScoped() {
+        String body = "{\n" +
+                "  \"eventFilters\": [\n" +
+                "    { \"attribute\": \"type\", \"value\": \"google.cloud.pubsub.topic.v1.messagePublished\" },\n" +
+                "    { \"attribute\": \"topic\", \"value\": \"my-topic\" }\n" +
+                "  ],\n" +
+                "  \"destination\": {\n" +
+                "    \"httpEndpoint\": { \"uri\": \"http://example.com/pubsub-receiver\" }\n" +
+                "  }\n" +
+                "}";
+        service.createTrigger("p2", "us-central1", "t1", body, false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/p1/topics/my-topic", message());
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    private static String pubSubTriggerBody(String transportTopic) {
+        String transport = transportTopic == null ? ""
+                : ",\n  \"transport\": { \"pubsub\": { \"topic\": \"" + transportTopic + "\" } }";
+        return "{\n" +
+                "  \"eventFilters\": [\n" +
+                "    { \"attribute\": \"type\", \"value\": \"google.cloud.pubsub.topic.v1.messagePublished\" }\n" +
+                "  ],\n" +
+                "  \"destination\": {\n" +
+                "    \"httpEndpoint\": { \"uri\": \"http://example.com/pubsub-receiver\" }\n" +
+                "  }" + transport + "\n" +
+                "}";
+    }
+
+    private static StoredMessage message() {
+        StoredMessage msg = new StoredMessage();
+        msg.setMessageId("msg-123");
+        msg.setData("hello".getBytes());
+        msg.setPublishTime("2026-06-25T12:00:00Z");
+        return msg;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubHttp() {
+        CompletableFuture<HttpResponse<Object>> future = CompletableFuture.completedFuture(mock(HttpResponse.class));
+        when(httpClient.sendAsync(any(HttpRequest.class), any())).thenReturn(future);
+    }
+
+    @Test
     void onGcsEventDeliversMatchingEvent() {
         String body = "{\n" +
                 "  \"eventFilters\": [\n" +

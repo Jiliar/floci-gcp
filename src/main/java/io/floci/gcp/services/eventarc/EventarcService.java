@@ -287,14 +287,7 @@ public class EventarcService {
         }
 
         for (Trigger trigger : activeTriggers) {
-            // Check if trigger uses this topic as transport, OR event filters match it
-            boolean matchesTransport = trigger.hasTransport() &&
-                    trigger.getTransport().hasPubsub() &&
-                    matchAttributeValue("topic", trigger.getTransport().getPubsub().getTopic(), topicName);
-
-            boolean matchesFilters = matches(trigger, "google.cloud.pubsub.topic.v1.messagePublished", attributes);
-
-            if (matchesTransport || matchesFilters) {
+            if (matchesPubSubTrigger(trigger, topicName, attributes)) {
                 String eventId = message.getMessageId() != null ? message.getMessageId() : UUID.randomUUID().toString();
                 String source = "//pubsub.googleapis.com/" + topicName;
                 String triggerId = GcpResourceNames.lastSegment(trigger.getName());
@@ -331,10 +324,28 @@ public class EventarcService {
         }
     }
 
+    private boolean matchesPubSubTrigger(Trigger trigger, String topicName, Map<String, String> attributes) {
+        String triggerProject = GcpResourceNames.parseProject(trigger.getName());
+        String transportTopic = trigger.hasTransport() && trigger.getTransport().hasPubsub()
+                ? trigger.getTransport().getPubsub().getTopic()
+                : "";
+        if (!transportTopic.isEmpty()) {
+            return topicName.equals(qualifyTopic(transportTopic, triggerProject));
+        }
+        boolean hasTopicFilter = trigger.getEventFiltersList().stream()
+                .anyMatch(filter -> "topic".equals(filter.getAttribute()));
+        return hasTopicFilter && matches(trigger, "google.cloud.pubsub.topic.v1.messagePublished", attributes);
+    }
+
+    private static String qualifyTopic(String topic, String project) {
+        return topic.startsWith("projects/") ? topic : GcpResourceNames.topic(project, topic);
+    }
+
     private boolean matches(Trigger trigger, String eventType, Map<String, String> attributes) {
         if (trigger.getEventFiltersCount() == 0) {
             return false;
         }
+        String triggerProject = GcpResourceNames.parseProject(trigger.getName());
         for (EventFilter filter : trigger.getEventFiltersList()) {
             String attrName = filter.getAttribute();
             String attrVal = filter.getValue();
@@ -346,18 +357,21 @@ public class EventarcService {
                     return false;
                 }
             }
-            if (!matchAttributeValue(attrName, attrVal, actualVal)) {
+            if (!matchAttributeValue(triggerProject, attrName, attrVal, actualVal)) {
                 return false;
             }
         }
         return true;
     }
 
-    private boolean matchAttributeValue(String name, String filterVal, String actualVal) {
+    private boolean matchAttributeValue(String triggerProject, String name, String filterVal, String actualVal) {
+        if ("topic".equals(name)) {
+            return qualifyTopic(filterVal, triggerProject).equals(actualVal);
+        }
         if (filterVal.equals(actualVal)) {
             return true;
         }
-        if ("topic".equals(name) || "bucket".equals(name)) {
+        if ("bucket".equals(name)) {
             String filterLast = lastSegment(filterVal);
             String actualLast = lastSegment(actualVal);
             return filterLast.equals(actualLast);
