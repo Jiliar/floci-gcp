@@ -23,6 +23,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -236,6 +237,40 @@ class EventarcServiceTest {
         service.onPubSubPublish("projects/p1/topics/my-topic", message());
 
         verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void messageAttributesCannotSpoofTheTopic() {
+        service.createTrigger("p2", "us-central1", "t1", topicFilterTriggerBody("my-topic"), false);
+        stubHttp();
+        StoredMessage spoofed = message();
+        spoofed.setAttributes(Map.of("topic", "projects/p2/topics/my-topic"));
+
+        service.onPubSubPublish("projects/p1/topics/my-topic", spoofed);
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
+    void qualifiedTopicFilterInAnotherProjectDoesNotFire() {
+        service.createTrigger("p2", "us-central1", "t1", topicFilterTriggerBody("projects/p1/topics/my-topic"), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/p1/topics/my-topic", message());
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    private static String topicFilterTriggerBody(String topic) {
+        return "{\n" +
+                "  \"eventFilters\": [\n" +
+                "    { \"attribute\": \"type\", \"value\": \"google.cloud.pubsub.topic.v1.messagePublished\" },\n" +
+                "    { \"attribute\": \"topic\", \"value\": \"" + topic + "\" }\n" +
+                "  ],\n" +
+                "  \"destination\": {\n" +
+                "    \"httpEndpoint\": { \"uri\": \"http://example.com/pubsub-receiver\" }\n" +
+                "  }\n" +
+                "}";
     }
 
     private static String pubSubTriggerBody(String transportTopic) {

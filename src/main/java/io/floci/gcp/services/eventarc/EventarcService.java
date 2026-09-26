@@ -279,12 +279,10 @@ public class EventarcService {
                 .map(json -> ProtoJson.merge(json, Trigger.newBuilder()).build())
                 .toList();
 
-        Map<String, String> attributes = new java.util.HashMap<>();
-        attributes.put("type", "google.cloud.pubsub.topic.v1.messagePublished");
-        attributes.put("topic", topicName);
-        if (message.getAttributes() != null) {
-            attributes.putAll(message.getAttributes());
-        }
+        // Filters match CloudEvents attributes only; the message's own attributes travel in the payload.
+        Map<String, String> attributes = Map.of(
+                "type", "google.cloud.pubsub.topic.v1.messagePublished",
+                "topic", topicName);
 
         for (Trigger trigger : activeTriggers) {
             if (matchesPubSubTrigger(trigger, topicName, attributes)) {
@@ -366,7 +364,8 @@ public class EventarcService {
 
     private boolean matchAttributeValue(String triggerProject, String name, String filterVal, String actualVal) {
         if ("topic".equals(name)) {
-            return qualifyTopic(filterVal, triggerProject).equals(actualVal);
+            String topic = qualifyTopic(filterVal, triggerProject);
+            return topic.equals(actualVal) && triggerProject.equals(GcpResourceNames.parseProject(topic));
         }
         if (filterVal.equals(actualVal)) {
             return true;
