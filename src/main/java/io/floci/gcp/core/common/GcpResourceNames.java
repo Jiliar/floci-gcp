@@ -8,6 +8,19 @@ public final class GcpResourceNames {
 
     private GcpResourceNames() {}
 
+    public record ProjectLocation(String project, String location) {}
+
+    /** Parses a location parent of the exact form {@code projects/{project}/locations/{location}}. */
+    public static ProjectLocation parseLocationParent(String parent) {
+        String[] parts = parent == null ? new String[0] : parent.split("/", -1);
+        if (parts.length != 4 || !"projects".equals(parts[0]) || !"locations".equals(parts[2])
+                || parts[1].isEmpty() || parts[3].isEmpty()) {
+            throw GcpException.invalidArgument("Invalid parent: '" + (parent == null ? "" : parent)
+                    + "'. Expected format projects/{project}/locations/{location}");
+        }
+        return new ProjectLocation(parts[1], parts[3]);
+    }
+
     /** Extracts the project ID from a resource name segment {@code projects/{project}/...}. */
     public static String parseProject(String resourceName) {
         if (resourceName == null) {

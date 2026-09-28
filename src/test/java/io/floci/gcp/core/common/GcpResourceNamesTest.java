@@ -1,6 +1,9 @@
 package io.floci.gcp.core.common;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -76,5 +79,22 @@ class GcpResourceNamesTest {
         assertEquals(
                 "projects/proj/databases/(default)/documents/col/doc",
                 GcpResourceNames.firestoreDocument("proj", "(default)", "col/doc"));
+    }
+
+    @Test
+    void parseLocationParent_wellFormed() {
+        GcpResourceNames.ProjectLocation parsed = GcpResourceNames.parseLocationParent("projects/p1/locations/us-east1");
+        assertEquals("p1", parsed.project());
+        assertEquals("us-east1", parsed.location());
+    }
+
+    @ParameterizedTest
+    @NullAndEmptySource
+    @ValueSource(strings = {"foo", "projects/p", "projects/p/locations", "projects/p/locations/",
+            "projects/p/regions/r", "projects//locations/l", "organizations/p/locations/l",
+            "projects/p/locations/l/queues/q", "/projects/p/locations/l"})
+    void parseLocationParent_malformedIsInvalidArgument(String parent) {
+        GcpException ex = assertThrows(GcpException.class, () -> GcpResourceNames.parseLocationParent(parent));
+        assertEquals("INVALID_ARGUMENT", ex.getGcpStatus());
     }
 }

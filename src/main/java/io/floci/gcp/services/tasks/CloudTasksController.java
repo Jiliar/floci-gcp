@@ -32,6 +32,7 @@ import com.google.protobuf.ByteString;
 import com.google.protobuf.Empty;
 import com.google.protobuf.Timestamp;
 import io.floci.gcp.core.common.GcpGrpcController;
+import io.floci.gcp.core.common.GcpResourceNames;
 import io.floci.gcp.core.common.PageToken;
 import io.floci.gcp.services.tasks.model.StoredQueue;
 import io.floci.gcp.services.tasks.model.StoredTask;
@@ -58,8 +59,8 @@ public class CloudTasksController extends CloudTasksGrpc.CloudTasksImplBase {
     public void listQueues(ListQueuesRequest request, StreamObserver<ListQueuesResponse> responseObserver) {
         LOG.debugf("listQueues parent=%s", request.getParent());
         try {
-            String[] parts = parseParent(request.getParent());
-            List<StoredQueue> all = service.listQueues(parts[0], parts[1]);
+            GcpResourceNames.ProjectLocation parent = GcpResourceNames.parseLocationParent(request.getParent());
+            List<StoredQueue> all = service.listQueues(parent.project(), parent.location());
             PageToken.Page<StoredQueue> page = PageToken.paginate(all,
                     request.getPageSize(), request.getPageToken());
             ListQueuesResponse.Builder response = ListQueuesResponse.newBuilder();
@@ -94,14 +95,14 @@ public class CloudTasksController extends CloudTasksGrpc.CloudTasksImplBase {
     public void createQueue(CreateQueueRequest request, StreamObserver<Queue> responseObserver) {
         LOG.infof("createQueue parent=%s", request.getParent());
         try {
-            String[] parts = parseParent(request.getParent());
+            GcpResourceNames.ProjectLocation parent = GcpResourceNames.parseLocationParent(request.getParent());
             Queue q = request.getQueue();
             String queueId = extractLastSegment(q.getName());
 
             RateLimits rl = q.getRateLimits();
             RetryConfig rc = q.getRetryConfig();
 
-            StoredQueue stored = service.createQueue(parts[0], parts[1], queueId,
+            StoredQueue stored = service.createQueue(parent.project(), parent.location(), queueId,
                     rl.getMaxDispatchesPerSecond(),
                     rl.getMaxConcurrentDispatches(),
                     rc.getMaxAttempts());
@@ -410,14 +411,6 @@ public class CloudTasksController extends CloudTasksGrpc.CloudTasksImplBase {
         } catch (Exception e) {
             return Timestamp.getDefaultInstance();
         }
-    }
-
-    private static String[] parseParent(String parent) {
-        // parent = "projects/{project}/locations/{location}"
-        String[] parts = parent.split("/");
-        String project = parts.length > 1 ? parts[1] : parent;
-        String location = parts.length > 3 ? parts[3] : "us-central1";
-        return new String[]{project, location};
     }
 
     private static String extractLastSegment(String name) {
