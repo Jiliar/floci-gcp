@@ -240,6 +240,16 @@ class EventarcServiceTest {
     }
 
     @Test
+    void transportTopicInAnotherProjectDoesNotFire() {
+        service.createTrigger("pA", "us-central1", "t1", pubSubTriggerBody("projects/pB/topics/t"), false);
+        stubHttp();
+
+        service.onPubSubPublish("projects/pB/topics/t", message());
+
+        verify(httpClient, never()).sendAsync(any(HttpRequest.class), any());
+    }
+
+    @Test
     void messageAttributesCannotSpoofTheTopic() {
         service.createTrigger("p2", "us-central1", "t1", topicFilterTriggerBody("my-topic"), false);
         stubHttp();

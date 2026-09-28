@@ -328,11 +328,20 @@ public class EventarcService {
                 ? trigger.getTransport().getPubsub().getTopic()
                 : "";
         if (!transportTopic.isEmpty()) {
-            return topicName.equals(qualifyTopic(transportTopic, triggerProject));
+            return isTriggerProjectTopic(transportTopic, triggerProject, topicName);
         }
         boolean hasTopicFilter = trigger.getEventFiltersList().stream()
                 .anyMatch(filter -> "topic".equals(filter.getAttribute()));
         return hasTopicFilter && matches(trigger, "google.cloud.pubsub.topic.v1.messagePublished", attributes);
+    }
+
+    /**
+     * Whether {@code topic}, resolved against the trigger's project when bare, is {@code publishedTopic} and
+     * lives in the trigger's project: a Pub/Sub trigger's topic "must be in the same project as the trigger".
+     */
+    private static boolean isTriggerProjectTopic(String topic, String triggerProject, String publishedTopic) {
+        String qualified = qualifyTopic(topic, triggerProject);
+        return qualified.equals(publishedTopic) && triggerProject.equals(GcpResourceNames.parseProject(qualified));
     }
 
     private static String qualifyTopic(String topic, String project) {
@@ -364,8 +373,7 @@ public class EventarcService {
 
     private boolean matchAttributeValue(String triggerProject, String name, String filterVal, String actualVal) {
         if ("topic".equals(name)) {
-            String topic = qualifyTopic(filterVal, triggerProject);
-            return topic.equals(actualVal) && triggerProject.equals(GcpResourceNames.parseProject(topic));
+            return isTriggerProjectTopic(filterVal, triggerProject, actualVal);
         }
         if (filterVal.equals(actualVal)) {
             return true;
