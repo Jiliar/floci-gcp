@@ -191,6 +191,11 @@ the session URL in the `Location` header. Chunks go to that URL with a `Content-
 header, using either `PUT` or `POST`, the Java, Node and Python SDKs send `PUT`, the Go
 SDK sends `POST`, and both are handled the same way.
 
+The session URL is an authorization token. After the opening request is authorized,
+status queries and chunks need only the session URL and may omit the `Authorization`
+header. Keep session URLs secret and share them only with clients that may complete
+the upload.
+
 Session behavior matches GCS:
 
 | Request to the session URL | Response |
@@ -259,6 +264,10 @@ URL signedUrl = storage.signUrl(
 ```
 
 Pre-signed URLs are generated using the `FLOCI_GCP_BASE_URL` as the base.
+With IAM authorization in `enforce` mode, signed-URL identity is not evaluated:
+because signatures are not cryptographically verified, these requests are treated
+as anonymous and require an `allUsers` grant. The default `disabled` mode retains
+the usual emulator behavior.
 
 ## Virtual-Hosted Style URLs
 
@@ -364,7 +373,17 @@ Object names containing `/`, spaces, `+`, or percent-encoded sequences round-tri
 **Object ACLs (REST JSON):**
 
 - `ListObjectAcl` / `CreateObjectAcl`
+
 - `GetObjectAcl` / `UpdateObjectAcl` / `DeleteObjectAcl`
+
+## IAM allow-policy enforcement
+
+Set `FLOCI_GCP_SERVICES_IAM_AUTHORIZATION_MODE=enforce` to evaluate supported
+bucket IAM allow policies for REST JSON and XML bucket and object operations.
+GCS gRPC v2 remains outside IAM allow-policy enforcement; its existing Credential
+Access Boundary checks still apply. The default remains `disabled`, preserving the
+emulator's no-auth behavior. See the [IAM service](iam.md) for supported principals,
+roles, conditions, bootstrap administration, and intentional exclusions.
 
 **Conditional requests (preconditions):**
 
@@ -392,8 +411,10 @@ unsupported. The emulator buffers parts and completed bytes in memory. Object
 publication and session removal are separate checkpoints; crash-atomic completion
 across those stores is not guaranteed.
 
-Authentication retains the existing emulator credential acceptance and limited
-CAB checks. Signed URL expiry checks do not prove cryptographic signature
+Authentication retains the existing emulator credential acceptance and CAB checks.
+In IAM `enforce` mode, every XML multipart request also evaluates its documented
+`storage.multipartUploads.*` and object permissions; an upload ID is not an
+authenticator. Signed URL expiry checks do not prove cryptographic signature
 enforcement. The SDK suite uses only synthetic credentials and fixture signing keys.
 
 Multipart object metadata is finalized before storage publication and Pub/Sub or
