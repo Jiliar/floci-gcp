@@ -89,6 +89,8 @@ Quick summary:
 - [ ] Commit messages follow Conventional Commits
 - [ ] No `Co-Authored-By` trailers for AI tools
 
+Please keep **no more than 2 open, non-draft pull requests** at a time. A bot labels your 3rd and later open PRs `over-pr-limit`, and starting 2026-10-08 it closes new ones from your 5th onward. See [CONTRIBUTING.md](https://github.com/floci-io/floci-gcp/blob/main/CONTRIBUTING.md#pull-request-limits-and-review-bandwidth) for details.
+
 ## Compatibility Tests
 
 The `./compatibility-tests/` directory contains SDK-based integration tests. Run them before submitting changes that affect GCP protocol behavior:
