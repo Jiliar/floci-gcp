@@ -244,3 +244,79 @@ WorkerPoolsSettings settings = WorkerPoolsSettings.newHttpJsonBuilder()
 ```
 
 `RevisionsClient` lists and deletes worker pool revisions with a `projects/{project}/locations/{location}/workerPools/{pool}` parent.
+
+## Instances
+
+floci-gcp emulates Cloud Run v2 Instances (`projects.locations.instances`) over REST JSON with the `google.cloud.run.v2.Instance` message from `proto-google-cloud-run-v2` 0.96.0. An instance is a single long-lived HTTP container with its own URL that can be stopped and started.
+
+| Operation | Path |
+|---|---|
+| Create instance | `POST /v2/projects/{project}/locations/{location}/instances` |
+| List instances | `GET /v2/projects/{project}/locations/{location}/instances` |
+| Get instance | `GET /v2/projects/{project}/locations/{location}/instances/{instance}` |
+| Update instance | `PATCH /v2/projects/{project}/locations/{location}/instances/{instance}` |
+| Delete instance | `DELETE /v2/projects/{project}/locations/{location}/instances/{instance}` |
+| Start instance | `POST /v2/projects/{project}/locations/{location}/instances/{instance}:start` |
+| Stop instance | `POST /v2/projects/{project}/locations/{location}/instances/{instance}:stop` |
+| Get IAM policy | `GET /v2/projects/{project}/locations/{location}/instances/{instance}:getIamPolicy` |
+| Set IAM policy | `POST /v2/projects/{project}/locations/{location}/instances/{instance}:setIamPolicy` |
+| Test IAM permissions | `POST /v2/projects/{project}/locations/{location}/instances/{instance}:testIamPermissions` |
+
+Create, update, start, stop and delete return `google.longrunning.Operation` resources whose metadata and response are the `Instance`. The request body of create and update is an `Instance`, with `containers` at the top level (there is no `template`).
+
+- Create accepts `instanceId` or `instance_id`. Both are optional: without one, the server generates a 15-character ID of lowercase letters and digits that starts with a letter. `validateOnly` validates without storing anything.
+- A duplicate instance ID, or an ID already used by a Cloud Run Service in the same project and location, returns `409 ALREADY_EXISTS` with `Resource '{id}' already exists.`. Creating a Service with the ID of an existing instance in the same project and location returns the same error.
+- Missing instances return `404 NOT_FOUND` with `Resource '{id}' of kind 'INSTANCE' in region '{location}' in project '{project}' does not exist.`.
+- List supports `pageSize` and `pageToken`.
+- Update accepts `updateMask`, `validateOnly` and `allowMissing`. With an update mask, a masked top-level field is replaced as a whole and output-only paths are ignored. A nested path such as `vpcAccess.connector` updates only that subfield and keeps its siblings; map and repeated fields (`labels`, `containers`, `volumes`, ...) can only be masked as a whole. A path that does not name an `Instance` field returns `400 INVALID_ARGUMENT` with `Invalid update mask path: {path}`. Without an update mask, every settable field present in the body is replaced. `allowMissing=true` creates the instance when it does not exist.
+- Delete accepts `validateOnly` and `etag`. Start and stop accept `validateOnly` in the query string or the request body.
+- IAM methods use the shared IAM policy store in the same way as Services. Deleting an instance deletes its policy.
+
+Default values filled in on create and update match GCP: each container gets `resources.limits` `cpu: 2000m` and `memory: 2048Mi` when unset and `ports: [{name: http1, containerPort: 8080}]` when no port is given; `ingress` defaults to `INGRESS_TRAFFIC_ALL` and `launchStage` to `GA`. Unnamed containers stay unnamed, as observed on GCP.
+
+### State model
+
+The instance state is reported by `terminalCondition`, whose `type` is always `Running`:
+
+| Phase | `terminalCondition.state` | `terminalCondition.message` |
+|---|---|---|
+| Starting | `CONDITION_RECONCILING` | `Waiting for instance to start.` |
+| Running | `CONDITION_SUCCEEDED` | `Started instance in {seconds}s.` |
+| Stopping | `CONDITION_RECONCILING` | `Waiting for instance to be stopped.` |
+| Stopped | `CONDITION_FAILED` | `Instance stopped.` |
+| Deleted (delete operation response) | `CONDITION_FAILED` | `Instance completed for deletion.` |
+
+`conditions` holds `ContainerReady` (`Imported container image in {seconds}s.`) and `ResourcesAvailable` (`Provisioned imported containers.`). Every create, update, start, stop and delete increments `generation`; `observedGeneration` catches up when the transition finishes and `reconciling` is true while it is in progress. Stopping an instance that is not running returns `400 FAILED_PRECONDITION` with `Instance '{id}' cannot be stopped because it is not running.`; starting a running (or starting) instance returns `400 FAILED_PRECONDITION` with `Instance '{id}' cannot be started because it is already running.`. A start whose container fails to come up leaves the instance in `CONDITION_FAILED` with the error message and fails the operation; it can be started again. After such a failure `ContainerReady` and `ResourcesAvailable` are `CONDITION_FAILED` with the same message, and `containerStatuses` lists the current containers without an `imageDigest`, so no state from an earlier successful start survives.
+
+`urls` and `containerStatuses` are kept while the instance is stopped. The delete operation response carries `deleteTime` and `expireTime` (30 days later), but the instance is removed immediately.
+
+### Execution
+
+In mock mode (`FLOCI_GCP_SERVICES_CLOUDRUN_MOCK=true`) instances are metadata only: create and start complete immediately in the running phase with a URL, stop and start only flip the terminal condition, and `containerStatuses[].imageDigest` is empty.
+
+With execution enabled, an instance runs one Docker container. Create, start and container-changing updates return pending operations that complete once the container port accepts connections (bounded by `FLOCI_GCP_SERVICES_CLOUDRUN_EXECUTION_STARTUP_TIMEOUT`). Stop sends SIGTERM, waits up to `FLOCI_GCP_SERVICES_CLOUDRUN_EXECUTION_CLEANUP_TIMEOUT`, then removes the container; start creates a new one; delete removes it. An update restarts the container only when `containers` or `volumes` change and the instance is running or starting; a stopped instance picks up the change on its next start. `containerStatuses[].imageDigest` is the first repository digest reported by Docker for the image. The Docker-mode constraints are the same as for Services: exactly one container, at most one port, an image, GCS volumes only (no `mountOptions`), no env `valueSource`, with the same error messages. GCS volumes are materialized and written back with the same code as Services, when the container is stopped or replaced.
+
+The container receives only `PORT` from the emulator, in addition to the environment variables declared on the container.
+
+For one instance, create, update, start, stop and delete are applied in request order: each request checks its precondition against the stored instance while holding that instance's lock, and container work runs on a per-instance queue. A transition that has been superseded by a later start, stop, restart or delete before its container work finished does not overwrite the later transition's state; a deleted instance is never written back. A transition only writes into the instance it was requested for, identified by `uid`: when an instance is deleted and re-created with the same ID while an earlier start is still running, that start completes its own operation with the deleted instance and leaves the new instance untouched.
+
+A container that exits on its own is not restarted and its instance keeps its phase; requests to its URL return `503` until the instance is stopped, updated or deleted, which removes the container and writes its GCS volumes back. On emulator shutdown floci-gcp waits up to 5 seconds for queued instance work to finish, then removes every instance container that has a runtime record and writes its writable GCS volumes back. A start still creating its container after that wait may not have recorded it yet, so that container can be left running without the shutdown writeback.
+
+### URL routing
+
+Instances get a URL of the same form as Services, `http://{instance}-{project-token}.{location}.run.localhost.floci.io:4588`, with the same host suffix and port rules. Requests whose `Host` is a generated Cloud Run host are resolved against Services first and then against Instances. Instance and Service creation each refuse an ID already used by the other kind in the same project and location, so a host names at most one resource. Requests to a stopped instance, or to an instance in mock mode, return `503`; requests to an unknown generated host return `404`. The proxy is the one Services use and forwards methods, paths, query strings, bodies, safe headers and `X-Forwarded-*` headers. Internally, routed requests are served under `/run/v2/projects/{project}/locations/{location}/instances/{instance}/`.
+
+Use the Java `InstancesClient` with the HTTP JSON transport, as for `ServicesClient`. `google-cloud-run` 0.96.0 or later is needed for `InstancesClient`.
+
+### Instance deviations from GCP
+
+- `restartPolicy`, `sshEnabled`, `defaultUriDisabled` and `Condition.instanceReason` are returned by GCP but do not exist in `proto-google-cloud-run-v2` 0.96.0, so they are neither accepted nor emitted. The emulator never restarts an instance container on its own, which is equivalent to a `NEVER` restart policy; GCP defaults to `ON_FAILURE`. Revisit this when the published proto gains these fields.
+- GCP environment variables for instances could not be observed (invoking the test instance failed authentication), so the container receives `PORT` only and no `K_*` or `CLOUD_RUN_*` variables.
+- `etag` is accepted on delete and never validated, which matches the observed GCP behavior for a mismatched etag.
+- No soft delete: deleted instances disappear immediately and `showDeleted` has no effect. `deleteTime` and `expireTime` appear only on the delete operation response.
+- `creator`, `lastModifier`, `logUri` and a default `serviceAccount` are not filled in, the same as Services. The resource `etag` is a random token per change, not GCP's format.
+- Pending operations do not emit GCP's transient `Retry` condition or `CONDITION_PENDING` phase.
+- gcloud is not supported: gcloud uses the v1 Knative API for instances.
+- Instances are not reconciled after an emulator restart. With persistent storage, an instance that was running is still reported in its last phase but has no container, since shutdown removed it; requests to its URL return `503` until it is stopped and started again. Containers left behind by a crashed emulator (no graceful shutdown) are not removed at startup.
+- The Service/Instance ID check is not atomic with the other kind's create: a Service and an Instance with the same ID created concurrently can both succeed, and the Service then owns the URL.
+- GCP's conditions after a failed start were not observed; the emulator marks `ContainerReady` and `ResourcesAvailable` as `CONDITION_FAILED` with the start error.

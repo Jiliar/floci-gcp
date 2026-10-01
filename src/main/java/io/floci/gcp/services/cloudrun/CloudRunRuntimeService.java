@@ -49,6 +49,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 @ApplicationScoped
@@ -198,6 +199,22 @@ public class CloudRunRuntimeService {
             LOG.debugf(e, "Cloud Run runtime endpoint lookup failed revision=%s", revisionName);
             return Optional.empty();
         }
+    }
+
+    Optional<CloudRunRuntimeInstance> runtimeRecord(String key) {
+        return runtimeStore.get(key);
+    }
+
+    void saveRuntimeRecord(String key, CloudRunRuntimeInstance instance) {
+        runtimeStore.put(key, instance);
+    }
+
+    List<CloudRunRuntimeInstance> runtimeRecords(Predicate<String> keyFilter) {
+        return List.copyOf(runtimeStore.keys()).stream()
+                .filter(keyFilter)
+                .map(runtimeStore::get)
+                .flatMap(Optional::stream)
+                .toList();
     }
 
     void markFailed(String revisionName, String message) {
@@ -1044,7 +1061,7 @@ public class CloudRunRuntimeService {
         return config.services().cloudrun().execution().requestTimeout();
     }
 
-    private void waitForReady(ContainerLifecycleManager.EndpointInfo endpoint, Duration timeout) {
+    void waitForReady(ContainerLifecycleManager.EndpointInfo endpoint, Duration timeout) {
         long deadline = System.nanoTime() + timeout.toNanos();
         RuntimeException last = null;
         while (System.nanoTime() < deadline) {

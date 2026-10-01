@@ -34,6 +34,7 @@ import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.jboss.logging.Logger;
 
@@ -51,6 +52,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 
 @ApplicationScoped
 public class CloudRunService {
@@ -65,6 +67,7 @@ public class CloudRunService {
     private final EmulatorConfig config;
     private final CloudRunRuntimeService runtimeService;
     private final CloudRunUrlService urlService;
+    private final Predicate<String> instanceExists;
     private final ExecutorService operationExecutor = Executors.newFixedThreadPool(
             Math.max(2, Runtime.getRuntime().availableProcessors()),
             runnable -> {
@@ -93,7 +96,8 @@ public class CloudRunService {
                            ServiceRegistry serviceRegistry,
                            EmulatorConfig config,
                            CloudRunRuntimeService runtimeService,
-                           CloudRunUrlService urlService) {
+                           CloudRunUrlService urlService,
+                           Instance<CloudRunInstancesService> instancesService) {
         this.serviceStore = storageFactory.createGlobal("cloudrun-services", "cloudrun-services.json",
                 new TypeReference<Map<String, String>>() {});
         this.revisionStore = storageFactory.createGlobal("cloudrun-revisions", "cloudrun-revisions.json",
@@ -104,6 +108,7 @@ public class CloudRunService {
         this.config = config;
         this.runtimeService = runtimeService;
         this.urlService = urlService;
+        this.instanceExists = name -> instancesService.get().instanceExists(name);
     }
 
     CloudRunService(StorageBackend<String, String> serviceStore,
@@ -138,6 +143,7 @@ public class CloudRunService {
         this.config = config;
         this.runtimeService = runtimeService;
         this.urlService = urlService;
+        this.instanceExists = name -> false;
     }
 
     void onStart(@Observes StartupEvent ev) {
@@ -147,7 +153,8 @@ public class CloudRunService {
                 .protocol(ServiceProtocol.REST)
                 .resourceClasses(CloudRunController.class, CloudRunInvocationController.class,
                         CloudRunUrlRoutingFilter.class, CloudRunJobsController.class,
-                        CloudRunWorkerPoolsController.class)
+                        CloudRunWorkerPoolsController.class,
+                        CloudRunInstancesController.class, CloudRunInstanceInvocationController.class)
                 .build());
     }
 
@@ -171,6 +178,9 @@ public class CloudRunService {
         String name = parent + "/services/" + id;
         if (serviceStore.get(name).isPresent()) {
             throw GcpException.alreadyExists("Cloud Run service already exists: " + name);
+        }
+        if (instanceExists.test(parent + "/instances/" + id)) {
+            throw GcpException.alreadyExists("Resource '" + id + "' already exists.");
         }
 
         Timestamp now = timestampNow();
@@ -217,6 +227,10 @@ public class CloudRunService {
         return serviceStore.get(name)
                 .map(json -> ProtoJson.merge(json, com.google.cloud.run.v2.Service.newBuilder()).build())
                 .orElseThrow(() -> GcpException.notFound("Cloud Run service not found: " + name));
+    }
+
+    public boolean serviceExists(String name) {
+        return serviceStore.get(name).isPresent();
     }
 
     public ListServicesResponse listServices(String project, String location, int pageSize, String pageToken) {
