@@ -1,5 +1,6 @@
 package io.floci.gcp.services.bigquery;
 
+import io.floci.gcp.core.common.GcpException;
 import io.floci.gcp.services.bigquery.model.ErrorProto;
 import io.floci.gcp.services.bigquery.model.TableFieldSchema;
 import io.floci.gcp.services.bigquery.model.TableSchema;
@@ -12,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RowCodecTest {
@@ -41,5 +43,86 @@ class RowCodecTest {
             assertTrue(errors.get(0).getMessage().contains("Cannot convert value to integer"),
                     errors.get(0).getMessage());
         }
+    }
+
+    @Test
+    void namelessSchemaFieldsAreRejected() {
+        TableFieldSchema field = new TableFieldSchema();
+        field.setType("STRING");
+        GcpException e = assertThrows(
+                GcpException.class,
+                () -> RowCodec.normalizeSchema(new TableSchema(List.of(field)))
+        );
+        assertTrue(e.getMessage().contains("name cannot be empty"), e.getMessage());
+        assertEquals("invalid", e.getReason());
+
+        field.setName(" ");
+        e = assertThrows(
+                GcpException.class,
+                () -> RowCodec.normalizeSchema(new TableSchema(List.of(field)))
+        );
+        assertTrue(e.getMessage().contains("name cannot be empty"), e.getMessage());
+        assertEquals("invalid", e.getReason());
+    }
+
+    @Test
+    void invalidTimestampsAreRejected() {
+        TableFieldSchema field = new TableFieldSchema();
+        field.setName("ts");
+        field.setType("TIMESTAMP");
+
+        // Valid timestamp should not return an error
+        Map<String, Object> out = new LinkedHashMap<>();
+        List<ErrorProto> errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "2023-10-01 12:00:00"), false, out);
+        assertTrue(errors.isEmpty(), "Valid timestamp should be accepted");
+
+        // Valid timestamp without seconds
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "2023-10-01 12:00"), false, out);
+        assertTrue(errors.isEmpty(), "Valid timestamp without seconds should be accepted");
+
+        // Valid timestamp with slash separator
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "2023/10/01 12:00:00"), false, out);
+        assertTrue(errors.isEmpty(), "Valid timestamp with slash should be accepted");
+
+        // Invalid timestamp (out of bounds year 10000 string) should return an error
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "99999-01-01 00:00:00"), false, out);
+        assertEquals(1, errors.size(), "Invalid timestamp should be rejected");
+        assertTrue(errors.get(0).getMessage().contains("Could not parse"), errors.get(0).getMessage());
+
+        // Invalid timestamp (out of bounds epoch seconds year 10000) should return an error
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "253402300800"), false, out);
+        assertEquals(1, errors.size(), "Invalid timestamp epoch seconds should be rejected");
+        assertTrue(errors.get(0).getMessage().contains("out of supported range"), errors.get(0).getMessage());
+
+        // Invalid timestamp (out of bounds year 0) should return an error
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "0000-12-31 23:59:59"), false, out);
+        assertEquals(1, errors.size(), "Invalid timestamp year 0 should be rejected");
+        assertTrue(errors.get(0).getMessage().contains("out of supported range"), errors.get(0).getMessage());
+
+        // Invalid timestamp (out of bounds below minimum year 1 epoch) should return an error
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "-62135596801"), false, out);
+        assertEquals(1, errors.size(), "Invalid timestamp below minimum year 1 epoch should be rejected");
+        assertTrue(errors.get(0).getMessage().contains("out of supported range"), errors.get(0).getMessage());
+
+        // Completely unparseable timestamp should return parse error
+        out.clear();
+        errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", "not a date"), false, out);
+        assertEquals(1, errors.size(), "Unparseable timestamp should be rejected");
+        assertTrue(errors.get(0).getMessage().contains("Could not parse"), errors.get(0).getMessage());
+    }
+
+    @Test
+    void unparseablePersistentTimestampsDoNotCrashReads() {
+        // Simulates a bad timestamp inserted before write-time validation was added
+        String bad = "99999-01-01 00:00:00";
+        assertEquals(bad, RowCodec.encodeTimestamp(bad, RowCodec.TimestampFormat.ISO8601_STRING));
+        assertEquals(bad, RowCodec.encodeTimestamp(bad, RowCodec.TimestampFormat.FLOAT64));
+        assertEquals(bad, RowCodec.encodeTimestamp(bad, RowCodec.TimestampFormat.INT64));
     }
 }

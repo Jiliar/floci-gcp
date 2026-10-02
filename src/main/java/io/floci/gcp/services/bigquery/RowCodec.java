@@ -1,5 +1,6 @@
 package io.floci.gcp.services.bigquery;
 
+import io.floci.gcp.core.common.GcpException;
 import io.floci.gcp.services.bigquery.model.ErrorProto;
 import io.floci.gcp.services.bigquery.model.TableCell;
 import io.floci.gcp.services.bigquery.model.TableFieldSchema;
@@ -8,9 +9,11 @@ import io.floci.gcp.services.bigquery.model.TableSchema;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -52,7 +55,11 @@ final class RowCodec {
         List<TableFieldSchema> normalized = new ArrayList<>(fields.size());
         for (TableFieldSchema field : fields) {
             TableFieldSchema copy = new TableFieldSchema();
-            copy.setName(field.getName());
+            String name = field.getName();
+            if (name == null || name.isBlank()) {
+                throw GcpException.invalidArgument("Table schema field name cannot be empty").withReason("invalid");
+            }
+            copy.setName(name);
             copy.setType(legacyType(field.getType()));
             copy.setMode(field.getMode() != null && !field.getMode().isBlank()
                     ? field.getMode().toUpperCase() : "NULLABLE");
@@ -202,8 +209,26 @@ final class RowCodec {
                 }
                 throw new IllegalArgumentException("Record field " + field.getName() + " requires an object value.");
             }
+            case "TIMESTAMP" -> {
+                String str = String.valueOf(raw);
+                try {
+                    Long micros = timestampMicros(str);
+                    if (micros == null) {
+                        throw new IllegalArgumentException("Could not parse '" + raw + "' as a timestamp. Required format is YYYY-MM-DD HH:MM[:SS[.SSSSSS]]");
+                    }
+                    if (micros < -62135596800000000L || micros > 253402300799999999L) {
+                        throw new IllegalArgumentException("Timestamp is out of supported range: " + raw);
+                    }
+                } catch (Exception e) {
+                    if (e instanceof IllegalArgumentException) {
+                        throw (IllegalArgumentException) e;
+                    }
+                    throw new IllegalArgumentException("Could not parse '" + raw + "' as a timestamp. Required format is YYYY-MM-DD HH:MM[:SS[.SSSSSS]]", e);
+                }
+                return str;
+            }
             default -> {
-                // STRING, TIMESTAMP, DATE, TIME, DATETIME, NUMERIC, BYTES... stored textually
+                // STRING, DATE, TIME, DATETIME, NUMERIC, BYTES... stored textually
                 if (raw instanceof String || raw instanceof Number || raw instanceof Boolean) {
                     return String.valueOf(raw);
                 }
@@ -304,7 +329,12 @@ final class RowCodec {
      * carries the requested numeric or ISO form, which is what the SDKs parse.
      */
     static String encodeTimestamp(String stored, TimestampFormat format) {
-        Long micros = timestampMicros(stored);
+        Long micros;
+        try {
+            micros = timestampMicros(stored);
+        } catch (DateTimeParseException | ArithmeticException e) {
+            return stored;
+        }
         if (micros == null) {
             return stored;
         }
@@ -326,6 +356,8 @@ final class RowCodec {
             // not epoch seconds; try civil forms below
         }
         String normalized = text.endsWith(" UTC") ? text.substring(0, text.length() - 4) + "Z" : text;
+        normalized = normalized.replaceFirst("^(-?\\d{4,})/(\\d{2})/(\\d{2})", "$1-$2-$3");
+        normalized = normalized.replaceFirst("^(-?\\d{4,}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2})(Z|[+-].*)?$", "$1:00$2");
         String seconds = DuckTypes.timestampTextToSeconds(normalized);
         if (seconds.equals(normalized)) {
             return null;
