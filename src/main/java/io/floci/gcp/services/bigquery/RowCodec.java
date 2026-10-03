@@ -9,7 +9,6 @@ import io.floci.gcp.services.bigquery.model.TableSchema;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -211,8 +210,9 @@ final class RowCodec {
             }
             case "TIMESTAMP" -> {
                 String str = String.valueOf(raw);
+                Long micros;
                 try {
-                    Long micros = timestampMicros(str);
+                    micros = timestampMicros(str);
                     if (micros == null) {
                         throw new IllegalArgumentException("Could not parse '" + raw + "' as a timestamp. Required format is YYYY-MM-DD HH:MM[:SS[.SSSSSS]]");
                     }
@@ -225,7 +225,7 @@ final class RowCodec {
                     }
                     throw new IllegalArgumentException("Could not parse '" + raw + "' as a timestamp. Required format is YYYY-MM-DD HH:MM[:SS[.SSSSSS]]", e);
                 }
-                return str;
+                return ISO_MICROS.format(Instant.EPOCH.plus(micros, ChronoUnit.MICROS));
             }
             default -> {
                 // STRING, DATE, TIME, DATETIME, NUMERIC, BYTES... stored textually
@@ -324,8 +324,8 @@ final class RowCodec {
     }
 
     /**
-     * Stored TIMESTAMP values are whatever {@code insertAll} accepted (epoch seconds or an
-     * ISO-8601 / civil-time string) or epoch seconds from the SQL engine; the wire always
+     * Stored TIMESTAMP values are normalized ISO-8601 strings from {@code insertAll},
+     * or epoch seconds from the SQL engine; the wire always
      * carries the requested numeric or ISO form, which is what the SDKs parse.
      */
     static String encodeTimestamp(String stored, TimestampFormat format) {

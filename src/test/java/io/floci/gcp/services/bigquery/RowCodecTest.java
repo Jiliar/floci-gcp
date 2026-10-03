@@ -125,4 +125,24 @@ class RowCodecTest {
         assertEquals(bad, RowCodec.encodeTimestamp(bad, RowCodec.TimestampFormat.FLOAT64));
         assertEquals(bad, RowCodec.encodeTimestamp(bad, RowCodec.TimestampFormat.INT64));
     }
+
+    @Test
+    void validTimestampsAreNormalizedToIsoString() {
+        TableFieldSchema field = new TableFieldSchema();
+        field.setName("ts");
+        field.setType("TIMESTAMP");
+
+        String expected = "2023-10-01T12:00:00.000000Z";
+        for (String input : List.of(
+                "2023-10-01 12:00 UTC",
+                "2023-10-01 14:00+02:00",
+                "2023-10-01T12:00Z",
+                "2023-10-01 14:00:00 +02:00"
+        )) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            List<ErrorProto> errors = RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("ts", input), false, out);
+            assertTrue(errors.isEmpty(), "Input should be accepted: " + input);
+            assertEquals(expected, out.get("ts"), "Input should be normalized to ISO string: " + input);
+        }
+    }
 }

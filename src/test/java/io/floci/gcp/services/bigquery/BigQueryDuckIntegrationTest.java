@@ -92,7 +92,8 @@ class BigQueryDuckIntegrationTest {
                 {"rows": [
                   {"json": {"id": 1, "name": "ana", "joined": "2024-01-02T03:04:05.5Z", "tags": ["a", "b"],
                             "address": {"city": "Lima"}}},
-                  {"json": {"id": 2, "name": "bo", "joined": 1704164645, "tags": [], "address": null}}
+                  {"json": {"id": 2, "name": "bo", "joined": 1704164645, "tags": [], "address": null}},
+                  {"json": {"id": 3, "name": "cyd", "joined": "2023-10-01 12:00 UTC", "tags": [], "address": null}}
                 ]}
                 """).when().post(BASE + "/datasets/shop/tables/users/insertAll")
                 .then().statusCode(200).body("insertErrors", nullValue());
@@ -152,7 +153,9 @@ class BigQueryDuckIntegrationTest {
                 .body("rows[0].f[1].v.v", equalTo(List.of("a", "b")))
                 .body("rows[0].f[2].v.f[0].v", equalTo("Lima"))
                 .body("rows[1].f[0].v", equalTo("1704164645000000"))
-                .body("rows[1].f[2].v", nullValue());
+                .body("rows[1].f[2].v", nullValue())
+                .body("rows[2].f[0].v", equalTo("1696161600000000"))
+                .body("rows[2].f[2].v", nullValue());
 
         String jobId = resp.jsonPath().getString("jobReference.jobId");
         given().when().get(BASE + "/queries/" + jobId).then().statusCode(200)
