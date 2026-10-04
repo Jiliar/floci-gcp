@@ -83,6 +83,52 @@ class IamServiceTest {
     }
 
     @Test
+    void wildcardProjectResolvesServiceAccountByEmailInOwningProject() {
+        StoredServiceAccount created = service.createServiceAccount("other-proj", "tf", "TF", "");
+        String email = "tf@other-proj.iam.gserviceaccount.com";
+
+        StoredServiceAccount sa = service.getServiceAccount("-", email);
+        assertEquals(created.getName(), sa.getName());
+        assertEquals("other-proj", sa.getProjectId());
+
+        StoredServiceAccountKey key = service.createKey("-", email);
+        assertTrue(key.getName().startsWith("projects/other-proj/serviceAccounts/" + email + "/keys/"));
+        assertEquals(key.getKeyId(), service.getKey("-", email, key.getKeyId()).getKeyId());
+        assertEquals(1, service.listKeys("-", email).size());
+        assertEquals(1, service.listKeys("other-proj", email).size());
+        service.deleteKey("-", email, key.getKeyId());
+        assertTrue(service.listKeys("other-proj", email).isEmpty());
+
+        service.updateServiceAccount("-", email, "Renamed", null);
+        assertEquals("Renamed", service.getServiceAccount("other-proj", email).getDisplayName());
+        assertEquals("projects/other-proj/serviceAccounts/" + email,
+                service.serviceAccountResource("-", email));
+
+        service.deleteServiceAccount("-", email);
+        assertTrue(service.listServiceAccounts("other-proj").isEmpty());
+    }
+
+    @Test
+    void wildcardProjectResolvesServiceAccountByUniqueId() {
+        StoredServiceAccount created = service.createServiceAccount("p2", "by-id", "ById", "");
+
+        StoredServiceAccount sa = service.getServiceAccount("-", created.getUniqueId());
+        assertEquals("by-id@p2.iam.gserviceaccount.com", sa.getEmail());
+    }
+
+    @Test
+    void wildcardProjectMissingServiceAccountIsPermissionDenied() {
+        GcpException ex = assertThrows(GcpException.class,
+                () -> service.getServiceAccount("-", "fake@example.com"));
+        assertEquals("PERMISSION_DENIED", ex.getGcpStatus());
+        assertEquals(403, ex.getHttpStatus());
+
+        GcpException keys = assertThrows(GcpException.class,
+                () -> service.listKeys("-", "missing@p1.iam.gserviceaccount.com"));
+        assertEquals("PERMISSION_DENIED", keys.getGcpStatus());
+    }
+
+    @Test
     void createKeyAndListKeys() {
         service.createServiceAccount("p1", "sa1", "SA1", "");
         StoredServiceAccountKey key = service.createKey("p1", "sa1@p1.iam.gserviceaccount.com");

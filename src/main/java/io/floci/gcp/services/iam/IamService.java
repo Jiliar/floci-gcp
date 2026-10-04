@@ -46,6 +46,8 @@ import java.util.function.Supplier;
 public class IamService {
 
     private static final Logger LOG = Logger.getLogger(IamService.class);
+    private static final String WILDCARD_PROJECT = "-";
+    private static final String SA_EMAIL_DOMAIN = ".iam.gserviceaccount.com";
 
     private final StorageBackend<String, StoredServiceAccount> saStore;
     private final StorageBackend<String, StoredServiceAccountKey> keyStore;
@@ -120,18 +122,30 @@ public class IamService {
     }
 
     public StoredServiceAccount getServiceAccount(String project, String emailOrId) {
-        String email = resolveEmail(project, emailOrId);
-        return saStore.get(saKey(project, email))
-                .orElseThrow(() -> GcpException.notFound("Service account not found: " + email));
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        return saStore.get(saKey(ref.project(), ref.email()))
+                .orElseThrow(() -> GcpException.notFound("Service account not found: " + ref.email()));
+    }
+
+    /**
+     * Canonical {@code projects/{project}/serviceAccounts/{id}} resource name. The {@code -}
+     * project wildcard is replaced by the owning project so policies are keyed consistently.
+     */
+    public String serviceAccountResource(String project, String emailOrId) {
+        if (!WILDCARD_PROJECT.equals(project)) {
+            return "projects/" + project + "/serviceAccounts/" + emailOrId;
+        }
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        return "projects/" + ref.project() + "/serviceAccounts/" + ref.email();
     }
 
     public StoredServiceAccount updateServiceAccount(String project, String emailOrId,
             String displayName, String description) {
         LOG.debugf("updateServiceAccount project=%s id=%s", project, emailOrId);
-        String email = resolveEmail(project, emailOrId);
-        String key = saKey(project, email);
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        String key = saKey(ref.project(), ref.email());
         StoredServiceAccount sa = saStore.get(key)
-                .orElseThrow(() -> GcpException.notFound("Service account not found: " + email));
+                .orElseThrow(() -> GcpException.notFound("Service account not found: " + ref.email()));
         if (displayName != null) {
             sa.setDisplayName(displayName);
         }
@@ -148,11 +162,11 @@ public class IamService {
     }
 
     public void deleteServiceAccount(String project, String emailOrId) {
-        String email = resolveEmail(project, emailOrId);
-        String key = saKey(project, email);
-        saStore.get(key).orElseThrow(() -> GcpException.notFound("Service account not found: " + email));
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        String key = saKey(ref.project(), ref.email());
+        saStore.get(key).orElseThrow(() -> GcpException.notFound("Service account not found: " + ref.email()));
         saStore.delete(key);
-        LOG.debugf("deleteServiceAccount project=%s email=%s", project, email);
+        LOG.debugf("deleteServiceAccount project=%s email=%s", ref.project(), ref.email());
     }
 
     // ── IAM Policies ───────────────────────────────────────────────────────────
@@ -402,8 +416,10 @@ public class IamService {
 
     // ── Service Account Keys ───────────────────────────────────────────────────
 
-    public StoredServiceAccountKey createKey(String project, String emailOrId) {
-        String email = resolveEmail(project, emailOrId);
+    public StoredServiceAccountKey createKey(String requestProject, String emailOrId) {
+        ServiceAccountRef ref = resolve(requestProject, emailOrId);
+        String project = ref.project();
+        String email = ref.email();
         saStore.get(saKey(project, email))
                 .orElseThrow(() -> GcpException.notFound("Service account not found: " + email));
         String keyId = UUID.randomUUID().toString().replace("-", "");
@@ -459,29 +475,29 @@ public class IamService {
     }
 
     public StoredServiceAccountKey getKey(String project, String emailOrId, String keyId) {
-        String email = resolveEmail(project, emailOrId);
-        return keyStore.get(keyStorageKey(project, email, keyId))
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        return keyStore.get(keyStorageKey(ref.project(), ref.email(), keyId))
                 .orElseThrow(() -> GcpException.notFound("Key not found: " + keyId));
     }
 
     public List<StoredServiceAccountKey> listKeys(String project, String emailOrId) {
-        String email = resolveEmail(project, emailOrId);
-        String prefix = "key:" + project + ":" + email + ":";
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        String prefix = "key:" + ref.project() + ":" + ref.email() + ":";
         return keyStore.scan(k -> k.startsWith(prefix));
     }
 
     public void deleteKey(String project, String emailOrId, String keyId) {
-        String email = resolveEmail(project, emailOrId);
-        String storageKey = keyStorageKey(project, email, keyId);
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        String storageKey = keyStorageKey(ref.project(), ref.email(), keyId);
         keyStore.get(storageKey).orElseThrow(() -> GcpException.notFound("Key not found: " + keyId));
         keyStore.delete(storageKey);
-        LOG.debugf("deleteKey project=%s email=%s keyId=%s", project, email, keyId);
+        LOG.debugf("deleteKey project=%s email=%s keyId=%s", ref.project(), ref.email(), keyId);
     }
 
     public Map<String, String> signBlob(String project, String emailOrId, String bytesToSignBase64) {
-        String email = resolveEmail(project, emailOrId);
-        saStore.get(saKey(project, email))
-                .orElseThrow(() -> GcpException.notFound("Service account not found: " + email));
+        ServiceAccountRef ref = resolve(project, emailOrId);
+        saStore.get(saKey(ref.project(), ref.email()))
+                .orElseThrow(() -> GcpException.notFound("Service account not found: " + ref.email()));
         byte[] inputBytes = Base64.getDecoder().decode(bytesToSignBase64);
         byte[] signature;
         try {
@@ -490,12 +506,44 @@ public class IamService {
         } catch (NoSuchAlgorithmException e) {
             throw GcpException.internal("SHA-256 not available");
         }
-        List<StoredServiceAccountKey> keys = listKeys(project, emailOrId);
+        List<StoredServiceAccountKey> keys = listKeys(ref.project(), ref.email());
         String keyId = keys.isEmpty() ? "stub-key-id" : keys.get(0).getKeyId();
         return Map.of("keyId", keyId, "signedBlob", Base64.getEncoder().encodeToString(signature));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private record ServiceAccountRef(String project, String email) {}
+
+    /**
+     * Resolves the owning project and email of a service account. With the {@code -} project
+     * wildcard a missing account is reported as PERMISSION_DENIED, as documented for
+     * {@code projects/-/serviceAccounts/{EMAIL_ADDRESS|UNIQUE_ID}} in iam-v1.
+     */
+    private ServiceAccountRef resolve(String project, String emailOrId) {
+        if (!WILDCARD_PROJECT.equals(project)) {
+            return new ServiceAccountRef(project, resolveEmail(project, emailOrId));
+        }
+        String owner = projectFromEmail(emailOrId);
+        if (owner != null && saStore.get(saKey(owner, emailOrId)).isPresent()) {
+            return new ServiceAccountRef(owner, emailOrId);
+        }
+        return saStore.scan(k -> k.startsWith("sa:")).stream()
+                .filter(sa -> emailOrId.equals(sa.getEmail()) || emailOrId.equals(sa.getUniqueId()))
+                .findFirst()
+                .map(sa -> new ServiceAccountRef(sa.getProjectId(), sa.getEmail()))
+                .orElseThrow(() -> GcpException.permissionDenied(
+                        "Permission denied on resource (or it may not exist): projects/-/serviceAccounts/"
+                                + emailOrId));
+    }
+
+    private static String projectFromEmail(String email) {
+        int at = email.indexOf('@');
+        if (at < 0 || !email.endsWith(SA_EMAIL_DOMAIN)) {
+            return null;
+        }
+        return email.substring(at + 1, email.length() - SA_EMAIL_DOMAIN.length());
+    }
 
     private static String resolveEmail(String project, String emailOrId) {
         return emailOrId.contains("@") ? emailOrId : emailOrId + "@" + project + ".iam.gserviceaccount.com";
