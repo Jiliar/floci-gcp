@@ -2,6 +2,7 @@ package io.floci.gcp.services.compute;
 
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import static io.restassured.RestAssured.given;
@@ -176,4 +177,34 @@ class ComputeResourcePolicyIntegrationTest extends ComputeTestSupport {
         }
     }
 
+    @Test void inlineBootDiskAttachesSnapshotPolicy() throws Exception {
+        String root = root(), policies = root + REGION + "/resourcePolicies", instances = root + ZONE + "/instances", disks = root + ZONE + "/disks";
+        network(root);
+        done(root, post(policies, snapshotSchedule("snapshots")));
+        String link = given().get(policies + "/snapshots").jsonPath().getString("selfLink");
+        Map<String, Object> body = new HashMap<>(vm("inline", List.of()));
+        body.remove("resourcePolicies");
+        body.put("disks", List.of(Map.of("boot", true, "autoDelete", true, "initializeParams",
+                Map.of("diskSizeGb", "10", "resourcePolicies", List.of("regions/us-central1/resourcePolicies/snapshots")))));
+        done(root, post(instances, body));
+        assertEquals(List.of(link), given().get(disks + "/inline").jsonPath().getList("resourcePolicies"));
+        assertNull(given().get(instances + "/inline").jsonPath().get("disks[0].initializeParams"));
+        var blocked = given().delete(policies + "/snapshots").then().statusCode(400).extract().jsonPath();
+        assertEquals("resourceInUseByAnotherResource", blocked.getString("error.errors[0].reason"));
+        done(root, given().delete(instances + "/inline"));
+        given().get(disks + "/inline").then().statusCode(404);
+        done(root, given().delete(policies + "/snapshots"));
+    }
+
+    @Test void inlineDiskPolicyIsValidated() throws Exception {
+        String root = root(), policies = root + REGION + "/resourcePolicies", instances = root + ZONE + "/instances";
+        network(root);
+        done(root, post(policies, instanceSchedule("schedule")));
+        Map<String, Object> body = new HashMap<>(vm("bad-inline", List.of()));
+        body.remove("resourcePolicies");
+        body.put("disks", List.of(Map.of("boot", true, "initializeParams",
+                Map.of("diskSizeGb", "10", "resourcePolicies", List.of("regions/us-central1/resourcePolicies/schedule")))));
+        post(instances, body).then().statusCode(400);
+        given().get(instances + "/bad-inline").then().statusCode(404);
+    }
 }
