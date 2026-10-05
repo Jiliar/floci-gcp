@@ -144,4 +144,23 @@ class ComputeResourcePolicyIntegrationTest extends ComputeTestSupport {
         done(root, given().delete(disks + "/born-attached"));
         done(root, given().delete(policies + "/snapshots"));
     }
+
+    private int insertWithCron(String policies, String name, String cron) {
+        return post(policies, Map.of("name", name, "instanceSchedulePolicy",
+                Map.of("vmStartSchedule", Map.of("schedule", cron)))).statusCode();
+    }
+
+    @Test void cronExpressionsAreValidated() {
+        String root = root(), policies = root + REGION + "/resourcePolicies";
+        int i = 0;
+        for (String valid : List.of("0 8 * * 1-5", "*/15 0-6 * * *", "0 8 * JAN MON", "0,30 1-5/2 1,15 jan-mar sun-sat", "5 4 * * 7", "0-30/10 * * * *")) {
+            assertEquals(200, insertWithCron(policies, "ok-" + i++, valid), valid);
+        }
+        for (String invalid : List.of("99 99 32 13 8", "60 * * * *", "* 24 * * *", "* * 0 * *", "* * 32 * *", "* * * 0 *", "* * * 13 *",
+                "* * * * 8", "5-1 * * * *", "*/0 * * * *", "* * * * * *", "* * * *", "", "   ", "a * * * *", "1- * * * *",
+                "1,,2 * * * *", "* * * FOO *", "* * * * FUNDAY", "*/ * * * *", "1/5/2 * * * *")) {
+            assertEquals(400, insertWithCron(policies, "bad-" + i++, invalid), "'" + invalid + "'");
+        }
+    }
+
 }

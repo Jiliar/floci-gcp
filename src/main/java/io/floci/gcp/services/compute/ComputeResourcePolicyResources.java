@@ -9,6 +9,7 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -24,6 +25,8 @@ public class ComputeResourcePolicyResources implements ComputeResourceHandler {
     private static final Pattern CLOCK = Pattern.compile("([01]\\d|2[0-3]):[0-5]\\d");
     private static final Pattern POLICY_PATH = Pattern.compile("regions/[^/]+/" + COLLECTION + "/[^/]+");
     private static final Set<String> DAYS = Set.of("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY");
+    private static final List<String> MONTHS = List.of("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC");
+    private static final List<String> WEEKDAYS = List.of("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT");
     private static final Set<String> ON_SOURCE_DISK_DELETE = Set.of("KEEP_AUTO_SNAPSHOTS", "APPLY_RETENTION_POLICY");
 
     public boolean handles(String kind) { return COLLECTION.equals(kind); }
@@ -66,7 +69,7 @@ public class ComputeResourcePolicyResources implements ComputeResourceHandler {
         for (String field : List.of("vmStartSchedule", "vmStopSchedule")) {
             if (policy.has(field)) {
                 String cron = required(requireObject(policy.get(field), field), "schedule");
-                if (cron.trim().split("\\s+").length != 5) { throw GcpException.invalidArgument("Invalid cron schedule in " + field); }
+                if (!validCron(cron)) { throw GcpException.invalidArgument("Invalid cron schedule in " + field + ": " + cron); }
             }
         }
         if (!policy.has("timeZone")) { policy.put("timeZone", "UTC"); }
@@ -74,6 +77,40 @@ public class ComputeResourcePolicyResources implements ComputeResourceHandler {
         for (String field : List.of("startTime", "expirationTime")) {
             if (policy.has(field)) { timestamp(required(policy, field), field); }
         }
+    }
+
+    /** Unix cron: five fields; {@code *}, lists, ranges, and {@code /step} on {@code *} or a range. */
+    private static boolean validCron(String cron) {
+        String[] fields = cron.trim().split("\\s+");
+        if (fields.length != 5) { return false; }
+        return cronField(fields[0], 0, 59, null) && cronField(fields[1], 0, 23, null) && cronField(fields[2], 1, 31, null)
+                && cronField(fields[3], 1, 12, MONTHS) && cronField(fields[4], 0, 7, WEEKDAYS);
+    }
+
+    private static boolean cronField(String field, int min, int max, List<String> names) {
+        for (String item : field.split(",", -1)) {
+            String[] step = item.split("/", -1);
+            if (step.length > 2) { return false; }
+            if (step.length == 2 && !(step[1].matches("\\d{1,9}") && Integer.parseInt(step[1]) >= 1)) { return false; }
+            if (step[0].equals("*")) { continue; }
+            String[] range = step[0].split("-", -1);
+            if (range.length > 2) { return false; }
+            int low = cronValue(range[0], min, max, names);
+            int high = range.length == 2 ? cronValue(range[1], min, max, names) : low;
+            if (low < 0 || high < 0 || low > high) { return false; }
+            if (step.length == 2 && range.length == 1) { return false; }
+        }
+        return true;
+    }
+
+    private static int cronValue(String token, int min, int max, List<String> names) {
+        if (names != null) {
+            int index = names.indexOf(token.toUpperCase(Locale.ROOT));
+            if (index >= 0) { return min == 0 ? index : index + min; }
+        }
+        if (!token.matches("\\d{1,3}")) { return -1; }
+        int value = Integer.parseInt(token);
+        return value >= min && value <= max ? value : -1;
     }
 
     private static void snapshotSchedule(ObjectNode policy) {
