@@ -127,9 +127,7 @@ public class CloudFunctionsService {
     }
 
     public ListFunctionsResponse listFunctions(String project, String location, int pageSize, String pageToken) {
-        if (!"-".equals(location)) {
-            locations.requireLocation(location, LocationCatalog.Kind.REGION);
-        }
+        locations.requireListLocation(location, LocationCatalog.Kind.REGION);
         String prefix = parent(project, location) + "/functions/";
         List<Function> functions = functionStore.scan(k -> k.startsWith(prefix)).stream()
                 .map(json -> ProtoJson.merge(json, Function.newBuilder()).build())
