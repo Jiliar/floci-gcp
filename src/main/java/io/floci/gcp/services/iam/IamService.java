@@ -134,7 +134,30 @@ public class IamService {
      */
     public String serviceAccountResource(String project, String emailOrId) {
         ServiceAccountRef ref = resolve(project, emailOrId);
-        return "projects/" + ref.project() + "/serviceAccounts/" + ref.email();
+        String canonical = "projects/" + ref.project() + "/serviceAccounts/" + ref.email();
+        String accountId = ref.email().substring(0, ref.email().indexOf('@'));
+        adoptLegacyPolicy(canonical, "projects/" + ref.project() + "/serviceAccounts/" + accountId);
+        if (!WILDCARD_PROJECT.equals(project)) {
+            adoptLegacyPolicy(canonical, "projects/" + project + "/serviceAccounts/" + emailOrId);
+        }
+        return canonical;
+    }
+
+    // Policies used to be keyed by the address in the request path, usually the account ID.
+    // A policy stored under such a key moves to the canonical email key on first access.
+    private void adoptLegacyPolicy(String canonical, String legacy) {
+        if (legacy.equals(canonical)) {
+            return;
+        }
+        withPolicyLocks(List.of(canonical, legacy), () -> {
+            if (policyStore.get(policyKey(canonical)).isEmpty()) {
+                policyStore.get(policyKey(legacy)).ifPresent(policy -> {
+                    policyStore.put(policyKey(canonical), policy);
+                    policyStore.delete(policyKey(legacy));
+                });
+            }
+            return null;
+        });
     }
 
     public StoredServiceAccount updateServiceAccount(String project, String emailOrId,
@@ -522,11 +545,13 @@ public class IamService {
         if (!WILDCARD_PROJECT.equals(project)) {
             if (isUniqueId(emailOrId)) {
                 String prefix = "sa:" + project + ":";
-                return saStore.scan(k -> k.startsWith(prefix)).stream()
+                Optional<ServiceAccountRef> byUniqueId = saStore.scan(k -> k.startsWith(prefix)).stream()
                         .filter(sa -> emailOrId.equals(sa.getUniqueId()))
                         .findFirst()
-                        .map(sa -> new ServiceAccountRef(project, sa.getEmail()))
-                        .orElseThrow(() -> GcpException.notFound("Service account not found: " + emailOrId));
+                        .map(sa -> new ServiceAccountRef(project, sa.getEmail()));
+                if (byUniqueId.isPresent()) {
+                    return byUniqueId.get();
+                }
             }
             return new ServiceAccountRef(project, resolveEmail(project, emailOrId));
         }
@@ -543,7 +568,8 @@ public class IamService {
                                 + emailOrId));
     }
 
-    // Account IDs must start with a letter, so an all-digit identifier is always a unique ID.
+    // GCP account IDs must start with a letter, so an all-digit identifier is tried as a unique ID
+    // first; accounts created here before that rule fall back to the account ID form.
     private static boolean isUniqueId(String emailOrId) {
         return !emailOrId.isEmpty() && emailOrId.chars().allMatch(Character::isDigit);
     }

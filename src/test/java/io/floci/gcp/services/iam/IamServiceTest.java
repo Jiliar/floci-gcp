@@ -129,6 +129,26 @@ class IamServiceTest {
     }
 
     @Test
+    void policyStoredUnderTheAccountIdMovesToTheEmailKey() {
+        service.createServiceAccount("p5", "legacy-sa", "Legacy", "");
+        StoredPolicy legacy = service.setPolicy("projects/p5/serviceAccounts/legacy-sa", new StoredPolicy());
+
+        String canonical = service.serviceAccountResource("p5", "legacy-sa");
+
+        assertEquals("projects/p5/serviceAccounts/legacy-sa@p5.iam.gserviceaccount.com", canonical);
+        assertEquals(legacy.getEtag(), service.getPolicy(canonical).getEtag());
+        assertEquals(IamService.EMPTY_POLICY_ETAG,
+                service.getPolicy("projects/p5/serviceAccounts/legacy-sa").getEtag());
+    }
+
+    @Test
+    void allDigitAccountIdStillResolvesWhenNoUniqueIdMatches() {
+        StoredServiceAccount numeric = service.createServiceAccount("p6", "123456", "Numeric", "");
+
+        assertEquals(numeric.getEmail(), service.getServiceAccount("p6", "123456").getEmail());
+    }
+
+    @Test
     void uniqueIdsAreTwentyOneDigitsAndDistinct() {
         StoredServiceAccount first = service.createServiceAccount("p4", "first-sa", "First", "");
         StoredServiceAccount second = service.createServiceAccount("p4", "second-sa", "Second", "");
