@@ -1,5 +1,7 @@
 package io.floci.gcp.services.bigquery;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.floci.gcp.core.common.GcpException;
 import io.floci.gcp.services.bigquery.model.ErrorProto;
 import io.floci.gcp.services.bigquery.model.TableCell;
@@ -26,6 +28,8 @@ import java.util.Map;
  * cells nest {@code {f:[...]}} (the exact contract of the SDK's {@code FieldValue.fromPb}).
  */
 final class RowCodec {
+
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
 
     private RowCodec() {}
 
@@ -78,6 +82,31 @@ final class RowCodec {
      */
     static List<ErrorProto> normalizeRow(TableSchema schema, Map<String, Object> json,
                                          boolean ignoreUnknownValues, Map<String, Object> out) {
+        return normalizeRow(schema, json, ignoreUnknownValues, false, out);
+    }
+
+    /**
+     * {@code nativeJson} selects how JSON columns read their value. In a NEWLINE_DELIMITED_JSON
+     * load the value is the JSON value itself, so a string is stored as a JSON string. In
+     * {@code insertAll} a string carries JSON text. Both verified against BigQuery.
+     */
+    static List<ErrorProto> normalizeRow(TableSchema schema, Map<String, Object> json,
+                                         boolean ignoreUnknownValues, boolean nativeJson,
+                                         Map<String, Object> out) {
+        return normalizeRow(schema, json, ignoreUnknownValues, nativeJson ? JsonInput.NATIVE : JsonInput.TEXT, out);
+    }
+
+    /**
+     * How a JSON field's value arrives: as JSON text ({@code insertAll}) or as the JSON value itself
+     * (NEWLINE_DELIMITED_JSON load). Either way every JSON cell, top-level or nested, is stored as
+     * JSON text, which is what {@code tabledata.list} returns; {@link #stagingRow} parses nested
+     * cells back for the query engine.
+     */
+    private enum JsonInput { TEXT, NATIVE }
+
+    private static List<ErrorProto> normalizeRow(TableSchema schema, Map<String, Object> json,
+                                                 boolean ignoreUnknownValues, JsonInput jsonInput,
+                                                 Map<String, Object> out) {
         List<ErrorProto> errors = new ArrayList<>();
         List<TableFieldSchema> fields = schema != null && schema.getFields() != null
                 ? schema.getFields() : List.of();
@@ -105,7 +134,7 @@ final class RowCodec {
                 continue;
             }
             try {
-                out.put(field.getName(), coerce(field, raw, ignoreUnknownValues));
+                out.put(field.getName(), coerce(field, raw, ignoreUnknownValues, jsonInput));
             } catch (IllegalArgumentException e) {
                 errors.add(error("invalid", field.getName(), e.getMessage()));
             }
@@ -129,10 +158,11 @@ final class RowCodec {
      * too. Throws {@link IllegalArgumentException} with the caller-facing message.
      */
     static Object coerceValue(TableFieldSchema field, Object raw) {
-        return coerce(field, raw, false);
+        return coerce(field, raw, false, JsonInput.TEXT);
     }
 
-    private static Object coerce(TableFieldSchema field, Object raw, boolean ignoreUnknownValues) {
+    private static Object coerce(TableFieldSchema field, Object raw, boolean ignoreUnknownValues,
+                                 JsonInput jsonInput) {
         if ("REPEATED".equals(field.getMode())) {
             if (!(raw instanceof List<?> list)) {
                 throw new IllegalArgumentException(
@@ -140,15 +170,16 @@ final class RowCodec {
             }
             List<Object> coerced = new ArrayList<>(list.size());
             for (Object element : list) {
-                coerced.add(coerceScalar(field, element, ignoreUnknownValues));
+                coerced.add(coerceScalar(field, element, ignoreUnknownValues, jsonInput));
             }
             return coerced;
         }
-        return coerceScalar(field, raw, ignoreUnknownValues);
+        return coerceScalar(field, raw, ignoreUnknownValues, jsonInput);
     }
 
     @SuppressWarnings("unchecked")
-    private static Object coerceScalar(TableFieldSchema field, Object raw, boolean ignoreUnknownValues) {
+    private static Object coerceScalar(TableFieldSchema field, Object raw, boolean ignoreUnknownValues,
+                                       JsonInput jsonInput) {
         String type = field.getType();
         switch (type) {
             case "INTEGER" -> {
@@ -200,7 +231,8 @@ final class RowCodec {
                     TableSchema subSchema = new TableSchema(field.getFields() != null
                             ? field.getFields() : List.of());
                     List<ErrorProto> nestedErrors =
-                            normalizeRow(subSchema, (Map<String, Object>) map, ignoreUnknownValues, nested);
+                            normalizeRow(subSchema, (Map<String, Object>) map, ignoreUnknownValues,
+                                    jsonInput, nested);
                     if (!nestedErrors.isEmpty()) {
                         throw new IllegalArgumentException(nestedErrors.get(0).getMessage());
                     }
@@ -227,15 +259,77 @@ final class RowCodec {
                 }
                 return ISO_MICROS.format(Instant.EPOCH.plus(micros, ChronoUnit.MICROS));
             }
-            default -> {
-                // STRING, DATE, TIME, DATETIME, NUMERIC, BYTES... stored textually
-                if (raw instanceof String || raw instanceof Number || raw instanceof Boolean) {
-                    return String.valueOf(raw);
+            case "JSON" -> {
+                if (jsonInput == JsonInput.TEXT) {
+                    return storedAsText(type, raw);
                 }
-                throw new IllegalArgumentException(
-                        "Cannot convert value to " + type + " (bad value): " + raw);
+                try {
+                    return JSON_MAPPER.writeValueAsString(raw);
+                } catch (JsonProcessingException e) {
+                    throw new IllegalArgumentException("Cannot convert value to JSON (bad value): " + raw, e);
+                }
+            }
+            default -> {
+                return storedAsText(type, raw);
             }
         }
+    }
+
+    private static Object storedAsText(String type, Object raw) {
+        // STRING, DATE, TIME, DATETIME, NUMERIC, BYTES... stored textually
+        if (raw instanceof String || raw instanceof Number || raw instanceof Boolean) {
+            return String.valueOf(raw);
+        }
+        throw new IllegalArgumentException("Cannot convert value to " + type + " (bad value): " + raw);
+    }
+
+    /**
+     * A stored row as the query engine stages it. Top-level JSON columns stay text, because they
+     * are staged as VARCHAR and cast ({@link DuckTypes#stagedAsText}). JSON inside a RECORD or a
+     * REPEATED field is read by {@code read_json} as is, so its stored JSON text is parsed back into
+     * the JSON value; otherwise the query would see a JSON string.
+     */
+    static Map<String, Object> stagingRow(TableSchema schema, Map<String, Object> row) {
+        return stagingRow(schema, row, true);
+    }
+
+    private static Map<String, Object> stagingRow(TableSchema schema, Map<String, Object> row, boolean topLevel) {
+        List<TableFieldSchema> fields = schema != null && schema.getFields() != null
+                ? schema.getFields() : List.of();
+        Map<String, Object> staged = new LinkedHashMap<>(row);
+        for (TableFieldSchema field : fields) {
+            Object value = row.get(field.getName());
+            if (value == null) {
+                continue;
+            }
+            if ("REPEATED".equals(field.getMode()) && value instanceof List<?> list) {
+                List<Object> elements = new ArrayList<>(list.size());
+                for (Object element : list) {
+                    elements.add(stagingScalar(field, element, false));
+                }
+                staged.put(field.getName(), elements);
+            } else {
+                staged.put(field.getName(), stagingScalar(field, value, topLevel));
+            }
+        }
+        return staged;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Object stagingScalar(TableFieldSchema field, Object value, boolean topLevel) {
+        if ("RECORD".equals(field.getType()) && value instanceof Map<?, ?> map) {
+            TableSchema subSchema = new TableSchema(field.getFields() != null ? field.getFields() : List.of());
+            return stagingRow(subSchema, (Map<String, Object>) map, false);
+        }
+        if (!topLevel && "JSON".equals(field.getType()) && value instanceof String text) {
+            try {
+                return JSON_MAPPER.readTree(text);
+            } catch (JsonProcessingException e) {
+                // insertAll does not validate JSON text yet; keep such a value as it was staged before.
+                return text;
+            }
+        }
+        return value;
     }
 
     /**

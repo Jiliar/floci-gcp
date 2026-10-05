@@ -1,5 +1,6 @@
 package io.floci.gcp.services.bigquery;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.floci.gcp.core.common.GcpException;
 import io.floci.gcp.services.bigquery.model.ErrorProto;
 import io.floci.gcp.services.bigquery.model.TableFieldSchema;
@@ -23,6 +24,70 @@ class RowCodecTest {
         field.setName("n");
         field.setType("INTEGER");
         return RowCodec.normalizeRow(new TableSchema(List.of(field)), Map.of("n", value), false, out);
+    }
+
+    private static Object storedJson(Object value, boolean nativeJson) {
+        TableFieldSchema field = new TableFieldSchema();
+        field.setName("j");
+        field.setType("JSON");
+        Map<String, Object> out = new LinkedHashMap<>();
+        List<ErrorProto> errors = RowCodec.normalizeRow(
+                new TableSchema(List.of(field)), Map.of("j", value), false, nativeJson, out);
+        assertTrue(errors.isEmpty(), String.valueOf(errors));
+        return out.get("j");
+    }
+
+    @Test
+    void ndjsonLoadStoresEachValueAsItsJsonValue() {
+        Map<String, Object> object = new LinkedHashMap<>();
+        object.put("id", 10);
+        object.put("name", "Alice");
+
+        assertEquals("20", storedJson(20, true));
+        assertEquals("\"This is a string\"", storedJson("This is a string", true));
+        assertEquals("{\"id\":10,\"name\":\"Alice\"}", storedJson(object, true));
+        assertEquals("\"{\\\"looks\\\": \\\"like json\\\"}\"", storedJson("{\"looks\": \"like json\"}", true));
+        assertEquals("[1,2]", storedJson(List.of(1, 2), true));
+    }
+
+    @Test
+    void insertAllJsonStringsStayJsonText() {
+        assertEquals("{\"a\": 1}", storedJson("{\"a\": 1}", false));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void ndjsonLoadStoresNestedJsonAsTextAndStagesItAsJson() throws Exception {
+        TableFieldSchema child = new TableFieldSchema();
+        child.setName("j");
+        child.setType("JSON");
+        TableFieldSchema rec = new TableFieldSchema();
+        rec.setName("rec");
+        rec.setType("RECORD");
+        rec.setFields(List.of(child));
+        TableFieldSchema arr = new TableFieldSchema();
+        arr.setName("arr");
+        arr.setType("JSON");
+        arr.setMode("REPEATED");
+        TableFieldSchema top = new TableFieldSchema();
+        top.setName("top");
+        top.setType("JSON");
+        TableSchema schema = new TableSchema(List.of(rec, arr, top));
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        List<ErrorProto> errors = RowCodec.normalizeRow(schema, Map.of("rec", Map.of("j", 20),
+                "arr", List.of(20, "This is a string", Map.of("a", 1)), "top", 20), false, true, out);
+
+        assertTrue(errors.isEmpty(), String.valueOf(errors));
+        assertEquals("20", ((Map<String, Object>) out.get("rec")).get("j"));
+        assertEquals(List.of("20", "\"This is a string\"", "{\"a\":1}"), out.get("arr"));
+
+        ObjectMapper json = new ObjectMapper();
+        Map<String, Object> staged = RowCodec.stagingRow(schema, out);
+        assertEquals(json.readTree("20"), ((Map<String, Object>) staged.get("rec")).get("j"));
+        assertEquals(List.of(json.readTree("20"), json.readTree("\"This is a string\""), json.readTree("{\"a\":1}")),
+                staged.get("arr"));
+        assertEquals("20", staged.get("top"));
     }
 
     @Test
