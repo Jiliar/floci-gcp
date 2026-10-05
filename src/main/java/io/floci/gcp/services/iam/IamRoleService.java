@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Project custom roles for the IAM v1 API ({@code projects.roles}). Roles are soft-deleted like
@@ -54,45 +55,49 @@ public class IamRoleService {
         apply(stored, role, null);
         stored.setEtag(newEtag());
         roleStore.put(key, stored);
-        return stored;
+        return stored.copy();
     }
 
     public StoredRole get(String project, String roleId) {
+        return stored(project, roleId).copy();
+    }
+
+    private StoredRole stored(String project, String roleId) {
         return roleStore.get(key(project, roleId))
                 .orElseThrow(() -> GcpException.notFound("The role was not found: projects/" + project + "/roles/" + roleId));
     }
 
     public synchronized StoredRole update(String project, String roleId, Map<String, Object> role, String updateMask) {
-        StoredRole stored = get(project, roleId);
+        StoredRole stored = stored(project, roleId).copy();
         checkEtag(stored, role == null ? null : role.get("etag"));
         List<String> mask = updateMask == null || updateMask.isBlank() ? null : List.of(updateMask.split(","));
         apply(stored, role, mask);
         stored.setEtag(newEtag());
         roleStore.put(key(project, roleId), stored);
-        return stored;
+        return stored.copy();
     }
 
     public synchronized StoredRole delete(String project, String roleId, String etag) {
-        StoredRole stored = get(project, roleId);
+        StoredRole stored = stored(project, roleId).copy();
         checkEtag(stored, etag);
         stored.setDeleted(true);
         stored.setEtag(newEtag());
         roleStore.put(key(project, roleId), stored);
-        return stored;
+        return stored.copy();
     }
 
     public synchronized StoredRole undelete(String project, String roleId, String etag) {
-        StoredRole stored = get(project, roleId);
+        StoredRole stored = stored(project, roleId).copy();
         checkEtag(stored, etag);
         stored.setDeleted(null);
         stored.setEtag(newEtag());
         roleStore.put(key(project, roleId), stored);
-        return stored;
+        return stored.copy();
     }
 
     public Map<String, Object> list(String project, boolean showDeleted, int pageSize, String pageToken) {
         String prefix = "role:" + project + ":";
-        List<StoredRole> roles = new ArrayList<>(roleStore.scan(k -> k.startsWith(prefix)));
+        List<StoredRole> roles = roleStore.scan(k -> k.startsWith(prefix)).stream().map(StoredRole::copy).collect(Collectors.toCollection(ArrayList::new));
         roles.removeIf(role -> !showDeleted && Boolean.TRUE.equals(role.getDeleted()));
         roles.sort((a, b) -> a.getName().compareTo(b.getName()));
         PageToken.Page<StoredRole> page = PageToken.paginate(roles, pageSize, pageToken);

@@ -21,6 +21,19 @@ public class StoredRole {
 
     public StoredRole() {}
 
+    /** Independent copy, so callers never share mutable state with the stored role. */
+    public StoredRole copy() {
+        StoredRole copy = new StoredRole();
+        copy.name = name;
+        copy.title = title;
+        copy.description = description;
+        copy.includedPermissions = includedPermissions == null ? null : new ArrayList<>(includedPermissions);
+        copy.stage = stage;
+        copy.etag = etag;
+        copy.deleted = deleted;
+        return copy;
+    }
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
