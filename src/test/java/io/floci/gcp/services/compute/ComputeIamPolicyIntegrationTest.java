@@ -1,14 +1,64 @@
 package io.floci.gcp.services.compute;
 
+import com.google.iam.v1.Binding;
+import com.google.iam.v1.GetIamPolicyRequest;
+import com.google.iam.v1.IAMPolicyGrpc;
+import com.google.iam.v1.Policy;
+import com.google.iam.v1.SetIamPolicyRequest;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.quarkus.test.common.http.TestHTTPResource;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.Test;
+import java.net.URI;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.Map;
 import static io.restassured.RestAssured.given;
 import static org.junit.jupiter.api.Assertions.*;
 
 @QuarkusTest
 class ComputeIamPolicyIntegrationTest extends ComputeTestSupport {
+    @TestHTTPResource URI endpoint;
+
+    private static Policy policy() {
+        return Policy.newBuilder().addBindings(Binding.newBuilder()
+                .setRole("roles/compute.instanceAdmin.v1").addMembers("serviceAccount:sa@p.iam.gserviceaccount.com")).build();
+    }
+
+    @Test void grpcPolicyWritesFailForMissingResourcesAndCannotResurrectDeletedOnes() throws Exception {
+        String root = root(), project = root.substring(root.lastIndexOf('/') + 1);
+        String disk = root + "/zones/us-central1-a/disks/data";
+        String diskName = "projects/" + project + "/zones/us-central1-a/disks/data";
+        ManagedChannel channel = ManagedChannelBuilder.forAddress(endpoint.getHost(), endpoint.getPort()).usePlaintext().build();
+        try {
+            var stub = IAMPolicyGrpc.newBlockingStub(channel).withDeadlineAfter(10, TimeUnit.SECONDS);
+            for (String missing : List.of("zones/us-central1-a/instances/nope", "zones/us-central1-a/disks/nope",
+                    "global/images/nope", "global/snapshots/nope", "regions/us-central1/subnetworks/nope")) {
+                String name = "projects/" + project + "/" + missing;
+                assertEquals(Status.Code.NOT_FOUND, assertThrows(StatusRuntimeException.class, () -> stub.setIamPolicy(
+                        SetIamPolicyRequest.newBuilder().setResource(name).setPolicy(policy()).build())).getStatus().getCode(), name);
+                assertEquals(Status.Code.NOT_FOUND, assertThrows(StatusRuntimeException.class, () -> stub.getIamPolicy(
+                        GetIamPolicyRequest.newBuilder().setResource(name).build())).getStatus().getCode(), name);
+            }
+
+            done(root, post(root + "/zones/us-central1-a/disks", Map.of("name", "data", "sizeGb", "10")));
+            stub.setIamPolicy(SetIamPolicyRequest.newBuilder().setResource(diskName).setPolicy(policy()).build());
+            done(root, given().delete(disk));
+
+            assertEquals(Status.Code.NOT_FOUND, assertThrows(StatusRuntimeException.class, () -> stub.setIamPolicy(
+                    SetIamPolicyRequest.newBuilder().setResource(diskName).setPolicy(policy()).build())).getStatus().getCode());
+            post(disk + "/setIamPolicy", Map.of("policy", Map.of())).then().statusCode(404);
+
+            done(root, post(root + "/zones/us-central1-a/disks", Map.of("name", "data", "sizeGb", "10")));
+            assertEquals(0, stub.getIamPolicy(GetIamPolicyRequest.newBuilder().setResource(diskName).build()).getBindingsCount());
+        } finally {
+            channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS);
+        }
+    }
+
     @Test void diskPolicyRoundTripsThroughGetSetAndTestPermissions() throws Exception {
         String root = root(), disk = root + "/zones/us-central1-a/disks/data";
         done(root, post(root + "/zones/us-central1-a/disks", Map.of("name", "data", "sizeGb", "10")));

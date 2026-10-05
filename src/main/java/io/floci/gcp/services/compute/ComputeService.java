@@ -51,6 +51,24 @@ public class ComputeService {
     void start(@Observes StartupEvent event) {
         registry.register(ServiceDescriptor.builder("compute").enabled(config.services().compute().enabled())
                 .storageKey("compute").resourceClasses(ComputeController.class).build());
+        // The shared IAM endpoint (gRPC and REST) only accepts policies for Compute resources that exist.
+        for (String pattern : List.of("projects/*/zones/*/instances/*", "projects/*/zones/*/disks/*",
+                "projects/*/regions/*/disks/*", "projects/*/global/images/*", "projects/*/global/snapshots/*",
+                "projects/*/regions/*/subnetworks/*")) {
+            iamService.registerPolicyResourceResolver(pattern, this::requireIamResourceExists);
+        }
+    }
+    /**
+     * Existence check for the shared IAM store. It reads the last saved state without taking this service's
+     * monitor: delete paths hold the monitor and then the IAM policy lock, so locking here would invert the order.
+     */
+    private void requireIamResourceExists(String resource) {
+        String[] parts = resource.split("/", 3);
+        ComputeProject saved = store.getForProject(parts[1], "state")
+                .map(value -> JSON.convertValue(value, ComputeProject.class)).orElse(null);
+        if (saved == null || !saved.resources.containsKey(parts[2])) {
+            throw GcpException.notFound("Resource not found: " + resource);
+        }
     }
     private ComputeProject state(String project) {
         if (project == null || !project.matches("[A-Za-z0-9][A-Za-z0-9:.-]{0,127}")) {
@@ -223,6 +241,7 @@ public class ComputeService {
         }
         ObjectNode resource;
         String operationType;
+        String deletedPolicy = null;
         if (verb.equals("POST") && c.name() == null) {
             name(required(body, "name"));
             c = context(project, path + "/" + body.path("name").asText(), c.state);
@@ -250,7 +269,7 @@ public class ComputeService {
                 handler.delete(c, resource);
                 c.noReferences(resource.path("selfLink").asText(), c.key());
                 c.state.resources.remove(c.key());
-                if (IAM_POLICY_COLLECTIONS.contains(c.collection())) { iamService.deletePolicy(policyName(c)); }
+                if (IAM_POLICY_COLLECTIONS.contains(c.collection())) { deletedPolicy = policyName(c); }
                 operationType = "delete";
             } else if (verb.equals("POST") && "setLabels".equals(c.action) && LABELLED.contains(c.collection())) {
                 checkFingerprint(resource, body, "labelFingerprint");
@@ -280,7 +299,14 @@ public class ComputeService {
         if (c.scope().startsWith("regions/")) { op.response.put("region", c.link(c.scope())); }
         if (requestId != null) { op.response.put("clientOperationId", requestId); c.state.requests.put(requestKey, operationKey); }
         c.state.operations.put(operationKey, op);
-        save(project, c.state);
+        if (deletedPolicy != null) {
+            // The policy goes away under the IAM policy lock together with the saved resource removal,
+            // so no policy write can land between the two and survive for a recreated name.
+            ComputeProject saved = c.state;
+            iamService.deleteResourceAndPolicy(deletedPolicy, () -> save(project, saved));
+        } else {
+            save(project, c.state);
+        }
         return op.response.deepCopy();
     }
     private static String policyName(Context c) {
