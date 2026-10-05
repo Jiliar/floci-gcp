@@ -115,6 +115,9 @@ public class ComputeService {
             return page(c, c.state.operations.entrySet().stream().filter(e -> !e.getValue().deleted && e.getKey().startsWith(c.scope() + "/operations/"))
                     .map(e -> e.getValue().response).toList(), query);
         }
+        if (c.collection().equals("images") && ComputePublicImages.isProject(project)) {
+            return publicImages(c, query);
+        }
         if (ComputeCatalog.COLLECTIONS.contains(c.collection())) {
             List<ObjectNode> values = ComputeCatalog.list(c, config.services().compute().regions());
             if (c.name() == null) { return page(c, values, query); }
@@ -150,8 +153,20 @@ public class ComputeService {
         }
         return result;
     }
+    private ObjectNode publicImages(Context c, Map<String, String> query) {
+        if (!c.scope().equals("global")) { throw GcpException.notFound("Unknown Compute resource path"); }
+        if (c.name() == null) { return page(c, ComputePublicImages.list(c.project()), query); }
+        Optional<ObjectNode> image = "family".equals(c.name()) && c.action != null
+                ? ComputePublicImages.byFamily(c.project(), c.action)
+                : c.action != null ? Optional.empty() : ComputePublicImages.byName(c.project(), c.name());
+        return image.orElseThrow(() -> GcpException.notFound("The resource 'projects/" + c.project() + "/global/images/"
+                + (c.action != null ? "family/" + c.action : c.name()) + "' was not found")).deepCopy();
+    }
     public synchronized ObjectNode mutate(String project, String path, String verb, ObjectNode input, Map<String, String> query) {
         Context c = context(project, path, state(project));
+        if (c.collection().equals("images") && ComputePublicImages.isProject(project)) {
+            throw GcpException.permissionDenied("Public image projects are read-only");
+        }
         ObjectNode body = input == null ? object() : input.deepCopy();
         c.query = query;
         if (c.collection().equals("operations")) {
@@ -391,6 +406,8 @@ public class ComputeService {
             return child;
         }
         public ObjectNode require(String ref) {
+            Optional<ObjectNode> publicImage = ComputePublicImages.resolve(project, ref);
+            if (publicImage.isPresent()) { return publicImage.get(); }
             String key = path(ref);
             Context target = context(project, key, state);
             if (ComputeCatalog.COLLECTIONS.contains(target.collection)) {
@@ -408,6 +425,11 @@ public class ComputeService {
         }
         public ObjectNode reference(ObjectNode body, String field, String expectedCollection) {
             String ref = required(body, field);
+            Optional<ObjectNode> publicImage = expectedCollection.equals("images") ? ComputePublicImages.resolve(project, ref) : Optional.empty();
+            if (publicImage.isPresent()) {
+                body.put(field, publicImage.get().path("selfLink").asText());
+                return publicImage.get();
+            }
             String path = path(ref);
             if (!path.contains("/" + expectedCollection + "/")) { throw GcpException.invalidArgument("Invalid " + field + " reference"); }
             ObjectNode result = require(path); ready(result);

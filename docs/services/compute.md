@@ -64,8 +64,30 @@ labels, inventory and deletion. Global standard snapshots support disk sources,
 labels, inventory and deletion. Source identity and size survive source deletion;
 restored disks cannot be smaller than their source. Images do not acquire invented
 backing snapshots. Copying a snapshot means restoring a disk and snapshotting it.
-Guest disk bytes, regional/instant snapshots and public OS image catalogs are not
-emulated.
+Guest disk bytes and regional/instant snapshots are not emulated.
+
+### Public images
+
+A small synthetic catalog of Google-published images is served read-only from the
+well-known image projects, so `debian-cloud/debian-12`, `ubuntu-os-cloud/ubuntu-2404-lts-amd64`
+and similar references work from any project:
+
+| Project | Families |
+|---|---|
+| `debian-cloud` | `debian-11`, `debian-12`, `debian-12-arm64`, `debian-13` |
+| `ubuntu-os-cloud` | `ubuntu-2004-lts`, `ubuntu-2204-lts`, `ubuntu-2204-lts-arm64`, `ubuntu-2404-lts-amd64`, `ubuntu-2404-lts-arm64`, `ubuntu-minimal-2404-lts-amd64` |
+| `cos-cloud` | `cos-stable`, `cos-beta`, `cos-dev`, `cos-117-lts` |
+| `rocky-linux-cloud` | `rocky-linux-8`, `rocky-linux-9` |
+| `centos-cloud` | `centos-stream-9` |
+| `rhel-cloud` | `rhel-8`, `rhel-9` |
+
+`images.get`, `images.list` and `images.getFromFamily` work against those projects.
+`instances.insert` (`initializeParams.sourceImage`) and `disks.insert` (`sourceImage`)
+accept a full URL, `projects/{p}/global/images/{name}` or
+`projects/{p}/global/images/family/{family}` pointing at a public image from any project;
+the stored disk records the resolved image URL. Each family has one image with a fixed
+name and creation date. Public image projects are read-only (`images.insert` returns 403),
+and references to other projects' images remain unsupported (400).
 
 ## Global external application load balancer
 
