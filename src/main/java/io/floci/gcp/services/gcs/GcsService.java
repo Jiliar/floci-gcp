@@ -245,6 +245,7 @@ public class GcsService {
         // Validate before the existence check: a malformed name is a 400 regardless of
         // whether something with that name happens to exist.
         GcsBucketNames.validate(name);
+        validateCustomPlacement(body);
         synchronized (bucketLock(name)) {
             if (bucketStore.get(name).isPresent()) {
                 LOG.warnf("createBucket failed: bucket already exists name=%s", name);
@@ -343,6 +344,17 @@ public class GcsService {
             bucket.setProjectId(defaultProjectId);
         }
         return bucket;
+    }
+
+    // A configurable dual-region is a pair of regions (cloud.google.com/storage/docs/locations).
+    private static void validateCustomPlacement(Map<String, Object> body) {
+        if (body == null || !(body.get("customPlacementConfig") instanceof Map<?, ?> placement)) {
+            return;
+        }
+        if (!(placement.get("dataLocations") instanceof List<?> dataLocations) || dataLocations.size() != 2) {
+            throw GcpException.invalidArgument(
+                    "customPlacementConfig.dataLocations must list exactly two regions for a configurable dual-region.");
+        }
     }
 
     private static Map<String, Object> customPlacementConfig(Map<?, ?> placement) {

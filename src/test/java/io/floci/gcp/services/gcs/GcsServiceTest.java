@@ -621,6 +621,19 @@ class GcsServiceTest {
         assertEquals("NOT_FOUND", missing.getGcpStatus());
     }
 
+    @Test
+    void listingByProjectNumberKeepsProjectsWithCollidingHashesApart() {
+        assertEquals("project-an".hashCode(), "project-c0".hashCode());
+        service.createBucket("an-bucket", "project-an", BASE_URL, Map.of());
+        service.createBucket("c0-bucket", "project-c0", BASE_URL, Map.of());
+
+        assertNotEquals(ProjectNumbers.of("project-an"), ProjectNumbers.of("project-c0"));
+        assertEquals(List.of("an-bucket"), service.listBuckets(ProjectNumbers.of("project-an")).stream()
+                .map(GcsBucket::getName).toList());
+        assertEquals(List.of("c0-bucket"), service.listBuckets(ProjectNumbers.of("project-c0")).stream()
+                .map(GcsBucket::getName).toList());
+    }
+
     @ParameterizedTest
     @EnumSource(LegacyMigrationStorageMode.class)
     void bucketProjectSurvivesReloadAndStaysOutOfTheJsonApi(LegacyMigrationStorageMode mode) throws Exception {

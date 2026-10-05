@@ -87,4 +87,18 @@ class GcsBucketLocationRestIntegrationTest {
                 .body("locationType", equalTo("dual-region"))
                 .body("customPlacementConfig.dataLocations", equalTo(List.of("US-EAST1", "US-WEST1")));
     }
+
+    @Test
+    void customPlacementConfigNeedsExactlyTwoRegions() {
+        for (List<String> dataLocations : List.of(List.of("US-EAST1"), List.of("US-EAST1", "US-WEST1", "US-CENTRAL1"))) {
+            given()
+                    .contentType("application/json")
+                    .body(Map.of("name", "loc-rest-bad-placement", "location", "US",
+                            "customPlacementConfig", Map.of("dataLocations", dataLocations)))
+                    .when().post("/storage/v1/b?project=test-project")
+                    .then().statusCode(400)
+                    .body("error.status", equalTo("INVALID_ARGUMENT"));
+        }
+        given().when().get("/storage/v1/b/loc-rest-bad-placement").then().statusCode(404);
+    }
 }

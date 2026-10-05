@@ -63,6 +63,7 @@ class GcsBucketLocationTest {
                 try {
                     storage.delete(name);
                 } catch (Exception ignored) {
+                    // Best-effort cleanup: a failed delete must not mask the assertions above.
                 }
             }
         }
