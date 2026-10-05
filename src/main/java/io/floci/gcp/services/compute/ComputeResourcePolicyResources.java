@@ -14,7 +14,12 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
-import static io.floci.gcp.services.compute.ComputeService.*;
+import static io.floci.gcp.services.compute.ComputeService.integer;
+import static io.floci.gcp.services.compute.ComputeService.labels;
+import static io.floci.gcp.services.compute.ComputeService.object;
+import static io.floci.gcp.services.compute.ComputeService.objectArray;
+import static io.floci.gcp.services.compute.ComputeService.required;
+import static io.floci.gcp.services.compute.ComputeService.requireObject;
 
 /** Regional resource policies plus the shared attach/detach logic used by instances and disks. */
 @ApplicationScoped
