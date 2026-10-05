@@ -3,6 +3,7 @@ package io.floci.gcp.services.compute;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.floci.gcp.config.EmulatorConfig;
 import io.floci.gcp.core.common.GcpException;
@@ -11,6 +12,9 @@ import io.floci.gcp.core.common.ServiceRegistry;
 import io.floci.gcp.core.storage.ProjectAwareStorageBackend;
 import io.floci.gcp.core.storage.StorageFactory;
 import io.floci.gcp.services.compute.model.ComputeOperation;
+import io.floci.gcp.services.iam.IamPolicyCodec;
+import io.floci.gcp.services.iam.IamService;
+import io.floci.gcp.services.iam.model.StoredPolicy;
 import io.floci.gcp.services.compute.model.ComputeProject;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -27,19 +31,22 @@ import java.util.regex.Pattern;
 public class ComputeService {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Pattern NAME = Pattern.compile("[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?");
+    private static final Set<String> IAM_POLICY_COLLECTIONS = Set.of("instances", "disks", "images", "snapshots", "subnetworks");
     private static final Set<String> LABELLED = Set.of("instances", "disks", "images", "snapshots", "addresses", "forwardingRules");
     private final ProjectAwareStorageBackend<ComputeProject> store;
     private final EmulatorConfig config;
     private final ServiceRegistry registry;
     private final Instance<ComputeResourceHandler> handlers;
+    private final IamService iamService;
 
     @Inject
     public ComputeService(StorageFactory factory, EmulatorConfig config, ServiceRegistry registry,
-                          Instance<ComputeResourceHandler> handlers) {
+                          Instance<ComputeResourceHandler> handlers, IamService iamService) {
         this.store = (ProjectAwareStorageBackend<ComputeProject>) factory.<ComputeProject>create("compute", "compute.json", new TypeReference<Map<String, ComputeProject>>() {});
         this.config = config;
         this.registry = registry;
         this.handlers = handlers;
+        this.iamService = iamService;
     }
     void start(@Observes StartupEvent event) {
         registry.register(ServiceDescriptor.builder("compute").enabled(config.services().compute().enabled())
@@ -132,6 +139,10 @@ public class ComputeService {
                     .max(Comparator.comparing(r -> r.path("id").asLong()))
                     .orElseThrow(() -> GcpException.notFound("Image family not found")).deepCopy();
         }
+        if ("getIamPolicy".equals(c.action) && IAM_POLICY_COLLECTIONS.contains(c.collection())) {
+            c.require(c.key());
+            return JSON.valueToTree(iamService.getPolicy(policyName(c)));
+        }
         if (c.action != null) { throw GcpException.unimplemented("Unsupported read action: " + c.action); }
         if (c.name() != null) { return c.require(c.key()).deepCopy(); }
         List<ObjectNode> resources = c.state.resources.entrySet().stream()
@@ -190,6 +201,11 @@ public class ComputeService {
             result.put("kind", "compute#networkEndpointGroupsListNetworkEndpoints");
             return result;
         }
+        if (verb.equals("POST") && IAM_POLICY_COLLECTIONS.contains(c.collection())
+                && ("setIamPolicy".equals(c.action) || "testIamPermissions".equals(c.action))) {
+            c.require(c.key());
+            return "setIamPolicy".equals(c.action) ? setIamPolicy(c, body) : testIamPermissions(c, body);
+        }
         String requestId = query.get("requestId");
         String requestKey = null;
         if (requestId != null) {
@@ -234,6 +250,7 @@ public class ComputeService {
                 handler.delete(c, resource);
                 c.noReferences(resource.path("selfLink").asText(), c.key());
                 c.state.resources.remove(c.key());
+                if (IAM_POLICY_COLLECTIONS.contains(c.collection())) { iamService.deletePolicy(policyName(c)); }
                 operationType = "delete";
             } else if (verb.equals("POST") && "setLabels".equals(c.action) && LABELLED.contains(c.collection())) {
                 checkFingerprint(resource, body, "labelFingerprint");
@@ -265,6 +282,25 @@ public class ComputeService {
         c.state.operations.put(operationKey, op);
         save(project, c.state);
         return op.response.deepCopy();
+    }
+    private static String policyName(Context c) {
+        return "projects/" + c.project() + "/" + c.key();
+    }
+    /** Compute IAM policies live in the shared IAM policy store, keyed by the resource path. */
+    @SuppressWarnings("unchecked")
+    private ObjectNode setIamPolicy(Context c, ObjectNode body) {
+        Map<String, Object> request = JSON.convertValue(body, new TypeReference<Map<String, Object>>() {});
+        Map<String, Object> policy = request.get("policy") instanceof Map<?, ?> nested ? (Map<String, Object>) nested : request;
+        StoredPolicy stored = IamPolicyCodec.fromJsonMap(policy);
+        return JSON.valueToTree(iamService.setPolicy(policyName(c), stored));
+    }
+    private ObjectNode testIamPermissions(Context c, ObjectNode body) {
+        List<String> requested = new ArrayList<>();
+        body.path("permissions").forEach(permission -> requested.add(permission.asText()));
+        ObjectNode result = object();
+        ArrayNode granted = result.putArray("permissions");
+        for (String permission : iamService.testPermissions(policyName(c), requested)) { granted.add(permission); }
+        return result;
     }
     private ComputeOperation operation(Context c) {
         ComputeOperation op = c.state.operations.get(c.key());

@@ -89,6 +89,17 @@ the stored disk records the resolved image URL. Each family has one image with a
 name and creation date. Public image projects are read-only (`images.insert` returns 403),
 and references to other projects' images remain unsupported (400).
 
+## IAM policies
+
+Instances, disks, images, snapshots and subnetworks support `getIamPolicy` (GET),
+`setIamPolicy` (POST, with the policy under `policy`) and `testIamPermissions` (POST) on
+the resource path, for example `zones/{zone}/instances/{name}/setIamPolicy` and
+`global/images/{name}/getIamPolicy`. Policies are stored in the shared IAM policy store,
+use etag concurrency checks, and are discarded when the resource is deleted. They are
+not enforced against Compute requests. This backs Terraform
+`google_compute_instance_iam_member` and the other `google_compute_*_iam_*` resources
+for these collections.
+
 ## Global external application load balancer
 
 Zonal GCE_VM_IP_PORT endpoint groups support endpoint attach/detach/list. Global
