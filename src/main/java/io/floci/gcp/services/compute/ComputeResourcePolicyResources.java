@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.floci.gcp.core.common.GcpException;
 import jakarta.enterprise.context.ApplicationScoped;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.List;
@@ -73,7 +74,10 @@ public class ComputeResourcePolicyResources implements ComputeResourceHandler {
             }
         }
         if (!policy.has("timeZone")) { policy.put("timeZone", "UTC"); }
-        required(policy, "timeZone");
+        String zone = required(policy, "timeZone");
+        // GCP takes tz database names. Exact, case-sensitive region IDs are accepted (UTC, Etc/UTC, America/Bogota);
+        // offsets such as +05:00 or UTC+5 and the legacy short aliases such as EST are not region IDs and are rejected.
+        if (!ZoneId.getAvailableZoneIds().contains(zone)) { throw GcpException.invalidArgument("Invalid timeZone " + zone + "; expected a tz database name"); }
         for (String field : List.of("startTime", "expirationTime")) {
             if (policy.has(field)) { timestamp(required(policy, field), field); }
         }

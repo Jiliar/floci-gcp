@@ -163,4 +163,17 @@ class ComputeResourcePolicyIntegrationTest extends ComputeTestSupport {
         }
     }
 
+    @Test void timeZonesAreValidated() {
+        String root = root(), policies = root + REGION + "/resourcePolicies";
+        int i = 0;
+        for (String valid : List.of("UTC", "America/Bogota", "Etc/UTC", "Europe/London")) {
+            assertEquals(200, post(policies, Map.of("name", "tz-" + i++, "instanceSchedulePolicy", Map.of("timeZone", valid,
+                    "vmStartSchedule", Map.of("schedule", "0 8 * * *")))).statusCode(), valid);
+        }
+        for (String invalid : List.of("Mars/Olympus", "", "   ", "EST", "+05:00", "UTC+5", "america/bogota")) {
+            assertEquals(400, post(policies, Map.of("name", "tz-bad-" + i++, "instanceSchedulePolicy", Map.of("timeZone", invalid,
+                    "vmStartSchedule", Map.of("schedule", "0 8 * * *")))).statusCode(), "'" + invalid + "'");
+        }
+    }
+
 }
