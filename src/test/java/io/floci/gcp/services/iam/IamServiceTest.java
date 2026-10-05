@@ -117,6 +117,28 @@ class IamServiceTest {
     }
 
     @Test
+    void everyServiceAccountAddressMapsToOnePolicyResource() {
+        StoredServiceAccount created = service.createServiceAccount("p3", "policy-sa", "Policy", "");
+        String canonical = "projects/p3/serviceAccounts/policy-sa@p3.iam.gserviceaccount.com";
+
+        assertEquals(canonical, service.serviceAccountResource("p3", "policy-sa"));
+        assertEquals(canonical, service.serviceAccountResource("p3", created.getEmail()));
+        assertEquals(canonical, service.serviceAccountResource("p3", created.getUniqueId()));
+        assertEquals(canonical, service.serviceAccountResource("-", created.getEmail()));
+        assertEquals(canonical, service.serviceAccountResource("-", created.getUniqueId()));
+    }
+
+    @Test
+    void uniqueIdsAreTwentyOneDigitsAndDistinct() {
+        StoredServiceAccount first = service.createServiceAccount("p4", "first-sa", "First", "");
+        StoredServiceAccount second = service.createServiceAccount("p4", "second-sa", "Second", "");
+
+        assertTrue(first.getUniqueId().matches("[1-9][0-9]{20}"), first.getUniqueId());
+        assertNotEquals(first.getUniqueId(), second.getUniqueId());
+        assertEquals(second.getEmail(), service.getServiceAccount("p4", second.getUniqueId()).getEmail());
+    }
+
+    @Test
     void wildcardProjectMissingServiceAccountIsPermissionDenied() {
         GcpException ex = assertThrows(GcpException.class,
                 () -> service.getServiceAccount("-", "fake@example.com"));

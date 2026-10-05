@@ -33,14 +33,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class IamService {
@@ -56,7 +57,6 @@ public class IamService {
     private final EmulatorConfig config;
     private final GrpcServerManager grpcServerManager;
     private final Instance<IamAuthorizationService> authorization;
-    private final AtomicLong uniqueIdSeq = new AtomicLong(100000000000000000L);
     private final Map<String, Consumer<String>> policyResolvers = new ConcurrentHashMap<>();
 
     @Inject
@@ -107,7 +107,7 @@ public class IamService {
         if (saStore.get(key).isPresent()) {
             throw GcpException.alreadyExists("Service account already exists: " + email);
         }
-        String uniqueId = String.valueOf(uniqueIdSeq.getAndIncrement());
+        String uniqueId = newUniqueId();
         String etag = UUID.randomUUID().toString().replace("-", "").substring(0, 8);
         StoredServiceAccount sa = new StoredServiceAccount(
                 "projects/" + project + "/serviceAccounts/" + email,
@@ -128,13 +128,11 @@ public class IamService {
     }
 
     /**
-     * Canonical {@code projects/{project}/serviceAccounts/{id}} resource name. The {@code -}
-     * project wildcard is replaced by the owning project so policies are keyed consistently.
+     * Canonical {@code projects/{project}/serviceAccounts/{email}} resource name. The account ID,
+     * unique ID and {@code -} project forms all map to it, so a policy is keyed the same way
+     * whichever address the caller used.
      */
     public String serviceAccountResource(String project, String emailOrId) {
-        if (!WILDCARD_PROJECT.equals(project)) {
-            return "projects/" + project + "/serviceAccounts/" + emailOrId;
-        }
         ServiceAccountRef ref = resolve(project, emailOrId);
         return "projects/" + ref.project() + "/serviceAccounts/" + ref.email();
     }
@@ -522,6 +520,14 @@ public class IamService {
      */
     private ServiceAccountRef resolve(String project, String emailOrId) {
         if (!WILDCARD_PROJECT.equals(project)) {
+            if (isUniqueId(emailOrId)) {
+                String prefix = "sa:" + project + ":";
+                return saStore.scan(k -> k.startsWith(prefix)).stream()
+                        .filter(sa -> emailOrId.equals(sa.getUniqueId()))
+                        .findFirst()
+                        .map(sa -> new ServiceAccountRef(project, sa.getEmail()))
+                        .orElseThrow(() -> GcpException.notFound("Service account not found: " + emailOrId));
+            }
             return new ServiceAccountRef(project, resolveEmail(project, emailOrId));
         }
         String owner = projectFromEmail(emailOrId);
@@ -535,6 +541,28 @@ public class IamService {
                 .orElseThrow(() -> GcpException.permissionDenied(
                         "Permission denied on resource (or it may not exist): projects/-/serviceAccounts/"
                                 + emailOrId));
+    }
+
+    // Account IDs must start with a letter, so an all-digit identifier is always a unique ID.
+    private static boolean isUniqueId(String emailOrId) {
+        return !emailOrId.isEmpty() && emailOrId.chars().allMatch(Character::isDigit);
+    }
+
+    // GCP unique IDs are 21-digit numbers. Random rather than sequential, so IDs stay unique
+    // across restarts with persistent storage.
+    private String newUniqueId() {
+        Set<String> taken = saStore.scan(k -> k.startsWith("sa:")).stream()
+                .map(StoredServiceAccount::getUniqueId)
+                .collect(Collectors.toSet());
+        String id;
+        do {
+            StringBuilder digits = new StringBuilder("1");
+            for (int i = 0; i < 20; i++) {
+                digits.append(ThreadLocalRandom.current().nextInt(10));
+            }
+            id = digits.toString();
+        } while (taken.contains(id));
+        return id;
     }
 
     private static String projectFromEmail(String email) {
